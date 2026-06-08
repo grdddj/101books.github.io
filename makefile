@@ -5,7 +5,7 @@ SHELL = /bin/bash
 .RECIPEPREFIX=-
 .SECONDEXPANSION:
 .PHONY: FORCE
-.PRECIOUS: %.gnos
+.SECONDARY:
 
 # overview of what makes what:
 # ./download.sh:  101weiqi.com -> problems/*.json
@@ -15,18 +15,16 @@ SHELL = /bin/bash
 # dependencies:
 # https://github.com/otrego/go-type1
 # https://packages.debian.org/stable/texlive
-# https://packages.debian.org/stable/ghostscript
-# https://packages.debian.org/stable/linkchecker
 
 pdfs = $(shell ls books | grep -v header.tex | xargs -i echo pdfs/{} | sed s/.tex/.pdf/g)
 all: $(pdfs) index.html
 logs: high-problems.log wide-problems.log duplicates.log problem-count.log page-count.log
 
-%.gnos: %.json extract.py
-- ./extract.py "$<"
+.extracted.sentinel: $$(shell find problems -name "*.json") extract.py
+- find problems -name "*.json" -print0 | xargs -0 -r -P8 -n 512 ./extract.py
+- touch "$@"
 
-pdfs/%.pdf: books/%.tex books/header.tex $$(shell find problems/$$(*F)/ -name "*.json" | sed -e "s/.json/.gnos/")
-- mkdir .latex.out
+pdfs/%.pdf: books/%.tex books/header.tex .extracted.sentinel
 - pdflatex -output-directory=.latex.out -interaction=nonstopmode "$<"
 - cp .latex.out/"$(@F)" "$@"
 
@@ -34,13 +32,10 @@ index.html: index.py problem-count.log
 - ./index.py
 
 problem-count.log: $(pdfs)
-- expr $$(find pdfs -name "*.pdf" | xargs -n1 -P8 pdfgrep -Poh "Problems: \K[0-9]+" | xargs -i -P8 bash -c "printf '{} + '")0 | tee $@
+- pdfgrep -Poh --page-range=1 "Problems: \K[0-9]+" $^ | paste -sd+ | bc > "$@"
 
 page-count.log: $(pdfs) index.html
 - lynx -dump -listonly $(shell pwd)/index.html | grep file | cut -d/ -f8-9 | xargs -i bash -c 'printf "{}:\t" && pdfinfo "{}" | grep Pages | awk "{print \$$2}"' | expand -t 10,40 | tee $@
-
-extract-all: FORCE
-- find problems -name "*.json" -print0 | xargs -0 -r -P8 -n 512 ./extract.py
 
 clean: FORCE
 - rm -rf -- .latex.out/* pdfs/*.pdf

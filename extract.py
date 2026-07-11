@@ -179,7 +179,7 @@ def process_one(path: str) -> None:
     if input_json["status"] == 1:
         solution_moves = "eliminated"
     else:
-        solution_moves = " ".join(map(to_goban_coordinate, theproblem.moves[:14]))
+        solution_moves = "~".join(map(to_goban_coordinate, theproblem.moves[:14]))
 
     stem = path.removesuffix(".json")
     with open(f"{stem}.sgf", "w") as file:

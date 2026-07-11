@@ -7,6 +7,7 @@
 \usepackage{gnos}
 \usepackage{varwidth}
 \usepackage{multicol}
+\usepackage{flushend}
 \usepackage[breakall]{truncate}
 \usepackage[twoside]{fancyhdr}
 \usepackage{CJKutf8}
@@ -119,18 +120,21 @@
   \def\halfgobanphantom{}%
   \def\p##1##2{%
     \stepcounter{pcount}%
-    {%
-      (\href{https://www.101weiqi.com/q/##2}{\thepcount})%
-      \:\:%
-      \input{problems/\jobname/##1/##2.solution}%
-    }
-
+    \noindent%
+    (\href{https://www.101weiqi.com/q/##2}{\thepcount})%
+    \:\:%
+    \input{problems/\jobname/##1/##2.solution}\unskip%
+    \par%
   }%
-  \begin{multicols*}{2}%
-    \setlength{\parskip}{2.7pt}%
+  {%
     \footnotesize%
-    \problems%
-  \end{multicols*}%
+    \setlength{\parskip}{2.7pt}%
+    \setlength{\columnsep}{30pt}%
+    \begin{multicols}{2}%
+      \raggedcolumns%
+      \problems%
+    \end{multicols}%
+  }%
   \clearpage%
 }
 

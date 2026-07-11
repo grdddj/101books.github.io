@@ -27,6 +27,10 @@ download() {
 done
 }
 
+download the-unexpected-tesuji /34851/31748/
+download the-unexpected-tesuji /34851/31749/
+download the-unexpected-tesuji /34851/31750/
+download the-unexpected-tesuji /34851/31751/
 download bedtime-tsumego /27421/140516/?page=1
 download bedtime-tsumego /27421/140516/?page=2
 download bedtime-tsumego /27477/142165/?page=1

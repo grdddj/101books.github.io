@@ -27,6 +27,10 @@ download() {
 done
 }
 
+download rin-kaiho-tsumego-the-power-of-reversal /2084/3812/?page=1
+download rin-kaiho-tsumego-the-power-of-reversal /2084/3812/?page=2
+download rin-kaiho-tsumego-the-power-of-reversal /2084/3812/?page=3
+download rin-kaiho-tsumego-the-power-of-reversal /2084/3812/?page=4
 download the-unexpected-tesuji /34851/31748/
 download the-unexpected-tesuji /34851/31749/
 download the-unexpected-tesuji /34851/31750/

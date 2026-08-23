@@ -1,11 +1,15 @@
+import argparse
 import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import parse_qs, urlsplit
 
 
 @dataclass(frozen=True)
@@ -152,3 +156,144 @@ def load_collection(repository_root: Path) -> list[Problem]:
         problems.append(Problem(number, f"{section}/{problem}", black, white))
 
     return problems
+
+
+class ReaderRequestHandler(SimpleHTTPRequestHandler):
+    collection: list[Problem]
+    progress_store: ProgressStore
+
+    def do_GET(self) -> None:
+        request = urlsplit(self.path)
+        if request.path == "/api/collection":
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "title": "200 Basic Go Problems",
+                    "problems": [
+                        {
+                            "number": problem.number,
+                            "id": problem.problem_id,
+                            "black": problem.black,
+                            "white": problem.white,
+                        }
+                        for problem in self.collection
+                    ],
+                },
+            )
+            return
+        if request.path == "/api/progress":
+            self._get_progress(parse_qs(request.query))
+            return
+        if request.path.startswith("/api/"):
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
+            return
+        super().do_GET()
+
+    def do_PUT(self) -> None:
+        if urlsplit(self.path).path != "/api/progress":
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", ""))
+            payload = json.loads(self.rfile.read(content_length))
+            if not isinstance(payload, dict) or not all(
+                isinstance(payload.get(key), str)
+                for key in ("user", "problem_id", "status")
+            ):
+                raise ValueError("Invalid progress payload")
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+
+        try:
+            problems = self.progress_store.set_status(
+                payload["user"], payload["problem_id"], payload["status"]
+            )
+        except json.JSONDecodeError as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
+        except ValueError as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except (OSError, TypeError) as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
+
+        self._send_json(HTTPStatus.OK, {"problems": problems})
+
+    def _get_progress(self, query: dict[str, list[str]]) -> None:
+        users = query.get("user", [])
+        if len(users) != 1:
+            self._send_error(HTTPStatus.BAD_REQUEST, "Missing user")
+            return
+        try:
+            problems = self.progress_store.get_user(users[0])
+        except json.JSONDecodeError as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
+        except ValueError as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except (OSError, TypeError) as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
+        self._send_json(HTTPStatus.OK, {"problems": problems})
+
+    def _send_error(self, status: HTTPStatus, message: str) -> None:
+        self._send_json(status, {"error": message})
+
+    def _send_json(self, status: HTTPStatus, body: dict[str, object]) -> None:
+        encoded_body = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded_body)))
+        self.end_headers()
+        self.wfile.write(encoded_body)
+
+
+def create_server(
+    repository_root: Path,
+    progress_path: Path,
+    host: str = "127.0.0.1",
+    port: int = 0,
+) -> ThreadingHTTPServer:
+    collection = load_collection(repository_root)
+    progress_store = ProgressStore(
+        progress_path, {problem.problem_id for problem in collection}
+    )
+    static_directory = Path(__file__).parent / "static"
+
+    class ConfiguredReaderRequestHandler(ReaderRequestHandler):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, directory=static_directory, **kwargs)
+
+    ConfiguredReaderRequestHandler.collection = collection
+    ConfiguredReaderRequestHandler.progress_store = progress_store
+    return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--progress-file", type=Path)
+    arguments = parser.parse_args()
+
+    repository_root = Path(__file__).resolve().parents[1]
+    progress_path = (
+        arguments.progress_file or repository_root / "reader-data/progress.json"
+    )
+    server = create_server(
+        repository_root, progress_path, arguments.host, arguments.port
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,18 @@
 import json
+import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
-from reader.server import ProgressStore, load_collection, parse_initial_stones
+from reader.server import (
+    ProgressStore,
+    create_server,
+    load_collection,
+    parse_initial_stones,
+)
 
 
 class CollectionTests(unittest.TestCase):
@@ -127,3 +135,101 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertIsNotNone(parsed.utcoffset())
         self.assertEqual(parsed.utcoffset().total_seconds(), 0)
         self.assertEqual(ProgressStore(path, {"24176/174139"}).get_user("Ada"), result)
+
+
+class HttpApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        self._make_fixture_collection()
+        self.server = create_server(self.root, self.root / "reader-data/progress.json")
+        self.server_thread = threading.Thread(target=self.server.serve_forever)
+        self.server_thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.server_thread.join()
+
+    def test_collection_endpoint_returns_initial_positions(self) -> None:
+        response = self.get_json("/api/collection")
+
+        self.assertEqual(response["title"], "200 Basic Go Problems")
+        self.assertEqual(response["problems"][0]["id"], "24176/174140")
+        self.assertNotIn("moves", response["problems"][0])
+
+    def test_progress_endpoint_round_trip(self) -> None:
+        self.put_json(
+            "/api/progress",
+            {"user": "Ada", "problem_id": "24176/174140", "status": "revisit"},
+        )
+
+        response = self.get_json("/api/progress?user=Ada")
+
+        self.assertEqual(response["problems"]["24176/174140"]["status"], "revisit")
+
+    def test_api_returns_structured_client_errors(self) -> None:
+        status, response = self.request_json("/api/progress", method="PUT", data=b"{")
+
+        self.assertEqual(status, 400)
+        self.assertIn("error", response)
+
+    def test_api_returns_structured_not_found_errors(self) -> None:
+        status, response = self.request_json("/api/missing")
+
+        self.assertEqual(status, 404)
+        self.assertIn("error", response)
+
+    def test_api_returns_server_error_for_corrupt_progress_storage(self) -> None:
+        progress_path = self.root / "reader-data/progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_text("{")
+
+        status, response = self.request_json("/api/progress?user=Ada")
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+
+    def _make_fixture_collection(self) -> None:
+        books_directory = self.root / "books"
+        books_directory.mkdir()
+        (books_directory / "200-basic-go-problems.tex").write_text(
+            r"\p{24176}{174140}%"
+        )
+
+        problem_directory = self.root / "problems/200-basic-go-problems/24176"
+        problem_directory.mkdir(parents=True)
+        (problem_directory / "174140.sgf").write_text("(;AB[aa]AW[bb];B[cc];W[dd])")
+
+    def get_json(self, path: str) -> dict[str, object]:
+        status, response = self.request_json(path)
+        self.assertEqual(status, 200)
+        return response
+
+    def put_json(self, path: str, payload: dict[str, str]) -> dict[str, object]:
+        status, response = self.request_json(
+            path,
+            method="PUT",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        return response
+
+    def request_json(
+        self,
+        path: str,
+        method: str = "GET",
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        request = Request(
+            f"{self.base_url}{path}", data=data, headers=headers or {}, method=method
+        )
+        try:
+            with urlopen(request) as response:
+                return response.status, json.loads(response.read())
+        except HTTPError as error:
+            return error.code, json.loads(error.read())

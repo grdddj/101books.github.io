@@ -130,6 +130,7 @@ function loadApp({
     `
 globalThis.readerTestApi = {
   getBoardCrop: typeof getBoardCrop === "function" ? getBoardCrop : undefined,
+  getCollectionPath: typeof getCollectionPath === "function" ? getCollectionPath : undefined,
   handleKeydown: typeof handleKeydown === "function" ? handleKeydown : undefined,
   handleWheel: typeof handleWheel === "function" ? handleWheel : undefined,
   getCollectionSlugFromPath: typeof getCollectionSlugFromPath === "function" ? getCollectionSlugFromPath : undefined,
@@ -299,6 +300,50 @@ test("an unknown collection URL reports an error without loading the first catal
   assert.match(elements.get("#status-feedback").textContent, /unknown collection/i);
 });
 
+test("only the root and one collection segment are valid reader paths", () => {
+  const root = loadApp({ pathname: "/", promptResult: "Ada" });
+  assert.equal(root.context.readerTestApi.getCollectionPath().kind, "root");
+
+  const collection = loadApp({ pathname: "/collections/test-collection", promptResult: "Ada" });
+  assert.equal(collection.context.readerTestApi.getCollectionPath().kind, "collection");
+  assert.equal(collection.context.readerTestApi.getCollectionPath().slug, "test-collection");
+
+  const invalidPaths = [
+    "/collections/missing/",
+    "/collections/",
+    "/anything",
+    "/collections/%E0%A4",
+  ];
+  for (const pathname of invalidPaths) {
+    const { context } = loadApp({ pathname, promptResult: "Ada" });
+    assert.equal(context.readerTestApi.getCollectionPath().kind, "invalid", pathname);
+  }
+});
+
+test("an invalid initial path reports an error without loading the saved collection", async () => {
+  const invalidPaths = [
+    "/collections/missing/",
+    "/collections/",
+    "/anything",
+    "/collections/%E0%A4",
+  ];
+  for (const pathname of invalidPaths) {
+    const { fetchImpl, calls } = createCollectionFetch();
+    const { context, elements } = loadApp({
+      fetchImpl,
+      pathname,
+      promptResult: "Ada",
+      savedCollection: "basic",
+    });
+
+    await context.readerTestApi.startReader();
+
+    assert.deepEqual(calls, ["/api/collections"], pathname);
+    assert.equal(elements.get("#collection-title").textContent, "", pathname);
+    assert.match(elements.get("#status-feedback").textContent, /invalid collection url/i, pathname);
+  }
+});
+
 test("a valid saved collection is loaded after the catalog and starts at its first revisit", async () => {
   const { fetchImpl, calls } = createCollectionFetch({
     problems: {
@@ -389,6 +434,25 @@ test("popstate loads the current collection URL without adding a history entry",
 
   assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
   assert.deepEqual(historyCalls, ["/collections/advanced"]);
+});
+
+test("popstate rejects an invalid collection path without loading a saved collection", async () => {
+  const { fetchImpl, calls } = createCollectionFetch();
+  const { context, elements, firePopstate, historyCalls } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+  calls.length = 0;
+
+  context.window.location.pathname = "/anything";
+  await firePopstate();
+
+  assert.deepEqual(calls, []);
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.match(elements.get("#status-feedback").textContent, /invalid collection url/i);
+  assert.deepEqual(historyCalls, []);
 });
 
 test("the collection dialog traps focus, restores its invoker, and blocks reader arrows", async () => {

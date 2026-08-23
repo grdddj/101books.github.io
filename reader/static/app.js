@@ -77,14 +77,22 @@ function collectionPath(slug) {
   return `/collections/${encodeURIComponent(slug)}`;
 }
 
-function getCollectionSlugFromPath() {
+function getCollectionPath() {
+  if (window.location.pathname === "/") return { kind: "root" };
   const match = /^\/collections\/([^/]+)$/.exec(window.location.pathname);
-  if (!match) return null;
+  if (!match) return { kind: "invalid" };
   try {
-    return decodeURIComponent(match[1]);
+    const slug = decodeURIComponent(match[1]);
+    if (!slug || slug.includes("/")) return { kind: "invalid" };
+    return { kind: "collection", slug };
   } catch {
-    return null;
+    return { kind: "invalid" };
   }
+}
+
+function getCollectionSlugFromPath() {
+  const path = getCollectionPath();
+  return path.kind === "collection" ? path.slug : null;
 }
 
 function getStatusTotals(problems) {
@@ -457,10 +465,13 @@ async function selectCollection(slug) {
 
 async function loadCollectionFromHistory() {
   if (isSaving || isLoadingCollection) return;
-  const slug = window.location.pathname === "/"
-    ? getSavedCollection(catalog)
-    : getCollectionSlugFromPath();
-  if (!slug || !catalog.some((item) => item.slug === slug)) {
+  const path = getCollectionPath();
+  if (path.kind === "invalid") {
+    showError(new Error("Invalid collection URL."));
+    return;
+  }
+  const slug = path.kind === "root" ? getSavedCollection(catalog) : path.slug;
+  if (!catalog.some((item) => item.slug === slug)) {
     showError(new Error("Unknown collection in URL."));
     return;
   }
@@ -484,11 +495,14 @@ async function startReader() {
     setControlsDisabled(true);
     user = getOrPromptUser();
     catalog = await fetchJson("/api/collections");
-    const pathSlug = getCollectionSlugFromPath();
-    if (pathSlug && !catalog.some((item) => item.slug === pathSlug)) {
+    const path = getCollectionPath();
+    if (path.kind === "invalid") {
+      throw new Error("Invalid collection URL.");
+    }
+    if (path.kind === "collection" && !catalog.some((item) => item.slug === path.slug)) {
       throw new Error("Unknown collection in URL.");
     }
-    const slug = pathSlug || getSavedCollection(catalog);
+    const slug = path.kind === "collection" ? path.slug : getSavedCollection(catalog);
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     await loadActiveCollection(slug);
     statusFeedback.textContent = `Tracking progress for ${user}.`;

@@ -1,3 +1,6 @@
 *.log
 *.aux
 *.out
+reader-data/
+__pycache__/
+*.py[cod]

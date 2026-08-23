@@ -75,7 +75,7 @@ default when `--base-path` is omitted.
 The equivalent process command is:
 
 ```bash
-uv run python -m reader.server \
+uv run --frozen python -m reader.server \
   --host 127.0.0.1 \
   --port 8123 \
   --base-path /tsumego \
@@ -88,6 +88,9 @@ outside the checkout; it cannot be combined with the compatibility option
 `--progress-file`. Back up the JSON application data in `/var/lib/tsumego` and
 restore it with ownership retained by the `tsumego` service account. Exclude
 the reproducible `.venv` and `.cache` directories from backups.
+
+Production uses `uv run --frozen` so a stale or missing lockfile fails startup
+instead of changing the deployed dependency set.
 
 The reader does not authenticate browser-entered display names. Publish it only
 to trusted users or add access control at Apache; anyone who can reach the site

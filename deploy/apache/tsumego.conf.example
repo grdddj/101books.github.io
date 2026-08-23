@@ -3,5 +3,6 @@
 
 RedirectMatch 308 ^/tsumego$ /tsumego/
 
+ProxyRequests Off
 ProxyPass        /tsumego/ http://127.0.0.1:8123/tsumego/
 ProxyPassReverse /tsumego/ http://127.0.0.1:8123/tsumego/

@@ -24,8 +24,18 @@
         >
           Change collection
         </button>
+        <button
+          id="show-activity"
+          type="button"
+          aria-controls="activity-panel"
+          aria-expanded="false"
+          disabled
+        >
+          Activity
+        </button>
       </div>
     </header>
+    <div id="modal-backdrop" class="modal-backdrop" aria-hidden="true" hidden></div>
     <section
       id="collection-panel"
       class="collection-panel"
@@ -39,6 +49,21 @@
         <button id="close-collection-panel" type="button">Close</button>
       </div>
       <ul id="collection-list" class="collection-list" aria-label="Available collections"></ul>
+    </section>
+    <section
+      id="activity-panel"
+      class="activity-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="activity-panel-title"
+      hidden
+    >
+      <div class="activity-panel__header">
+        <h2 id="activity-panel-title">Recent activity</h2>
+        <button id="close-activity-panel" type="button">Close</button>
+      </div>
+      <p id="activity-empty" class="activity-empty" hidden></p>
+      <ol id="activity-list" class="activity-list" aria-label="Recent solved and revisit actions"></ol>
     </section>
     <main id="app" class="reader">
       <p id="problem-ordinal" class="problem-ordinal"></p>

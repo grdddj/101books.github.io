@@ -20,13 +20,15 @@ Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
 restores the last booklet selected in that browser. The reader asks for a display
 name once per browser. Use **Change collection** to browse the API-sorted booklet
-catalog and switch collections. Progress is stored in one JSON document per
-display name below `reader-data/users/`; this directory is intentionally ignored
-by Git. Filenames are deterministic SHA-256 digests, while each document retains
-the display name, current problem records, and the append-only solved/revisit
-event history. Several unauthenticated browser-local profiles can use the same
-process. Updates are synchronized per user within that process, but the store
-does not provide cross-process coordination.
+catalog and switch collections. Use **Activity** to review the current profile's
+recent solved and revisit actions with local timestamps and booklet/problem labels;
+the view is read-only and never exposes moves or solutions. Progress is stored
+in one JSON document per display name below `reader-data/users/`; this directory
+is intentionally ignored by Git. Filenames are deterministic SHA-256 digests,
+while each document retains the display name, current problem records, and the
+append-only solved/revisit event history. Several unauthenticated browser-local
+profiles can use the same process. Updates are synchronized per user within that
+process, but the store does not provide cross-process coordination.
 
 Progress records are scoped to the selected booklet and to repeated positions
 within it. Their IDs use the form `<booklet-slug>:<section>/<problem>@<occurrence>`,
@@ -95,13 +97,20 @@ normalizes it to one canonical prefix. `--data-dir` stores the progress data
 outside the checkout; it cannot be combined with the compatibility option
 `--progress-file`.
 
-On the first start where the data directory contains the legacy shared
-`progress.json`, the server validates the complete document before writing,
-creates a timestamped byte-for-byte backup, and migrates each profile into
-`users/`. `progress-migration.json` records the restart-safe migration state. An
-interrupted migration resumes without duplicating events; an existing target,
-missing completed target, corrupt source, or corrupt backup stops startup instead
-of overwriting or silently dropping progress.
+Before the first production start, install any existing shared `progress.json`
+with the service account's ownership and a private mode:
+
+```bash
+sudo install -o tsumego -g tsumego -m 0600 \
+  /path/to/legacy/progress.json /var/lib/tsumego/progress.json
+```
+
+On that start, the server validates the complete document before writing, creates
+a timestamped byte-for-byte backup, and migrates each profile into `users/`.
+`progress-migration.json` records the restart-safe migration state. An interrupted
+migration resumes without duplicating events; an existing target, missing completed
+target, corrupt source, or corrupt backup stops startup instead of overwriting or
+silently dropping progress.
 
 Back up all JSON application data in `/var/lib/tsumego`, including `users/`, the
 legacy backup, and the migration marker, and restore it with ownership retained

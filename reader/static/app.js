@@ -12,6 +12,12 @@ const changeCollectionButton = document.querySelector("#change-collection");
 const collectionPanel = document.querySelector("#collection-panel");
 const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
 const collectionList = document.querySelector("#collection-list");
+const activityButton = document.querySelector("#show-activity");
+const activityPanel = document.querySelector("#activity-panel");
+const closeActivityPanelButton = document.querySelector("#close-activity-panel");
+const activityList = document.querySelector("#activity-list");
+const activityEmpty = document.querySelector("#activity-empty");
+const modalBackdrop = document.querySelector("#modal-backdrop");
 const basePath = window.READER_BASE_PATH || "";
 
 let collection;
@@ -24,8 +30,10 @@ let wheelTimer;
 let lastWheelNavigation = 0;
 let isSaving = false;
 let isLoadingCollection = false;
+let isLoadingActivity = false;
 let collectionButtons = [];
 let collectionPanelInvoker;
+let activityPanelInvoker;
 let displayedPathname;
 let pendingHistoryPathname;
 let historyRequestId = 0;
@@ -281,7 +289,7 @@ async function setCurrentStatus(status) {
     showError(new Error("Reader is still loading."));
     return;
   }
-  if (isCollectionPanelOpen() || isSaving || isLoadingCollection) return;
+  if (isDialogOpen() || isSaving || isLoadingCollection) return;
 
   const submittedIndex = currentIndex;
   const problem = collection.problems[submittedIndex];
@@ -319,7 +327,7 @@ async function setCurrentStatus(status) {
 }
 
 function navigate(delta) {
-  if (!hasCollection() || isSaving || isLoadingCollection || isCollectionPanelOpen()) return;
+  if (!hasCollection() || isSaving || isLoadingCollection || isDialogOpen()) return;
   currentIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),
@@ -329,7 +337,7 @@ function navigate(delta) {
 
 function handleWheel(event) {
   if (
-    isCollectionPanelOpen() ||
+    isDialogOpen() ||
     event.defaultPrevented ||
     event.altKey ||
     event.ctrlKey ||
@@ -363,6 +371,21 @@ function handleKeydown(event) {
     }
     if (event.key === "Tab") {
       trapCollectionPanelFocus(event);
+      return;
+    }
+    if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+    }
+    return;
+  }
+  if (isActivityPanelOpen()) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeActivityPanel();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapActivityPanelFocus(event);
       return;
     }
     if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
@@ -413,6 +436,7 @@ function setControlsDisabled(disabled) {
 
 function setCollectionControlsDisabled(disabled) {
   if (changeCollectionButton) changeCollectionButton.disabled = disabled;
+  if (activityButton) activityButton.disabled = disabled;
   for (const { option } of collectionButtons) {
     option.disabled = disabled;
   }
@@ -424,6 +448,22 @@ function showError(error) {
 
 function isCollectionPanelOpen() {
   return Boolean(collectionPanel && !collectionPanel.hidden);
+}
+
+function isActivityPanelOpen() {
+  return Boolean(activityPanel && !activityPanel.hidden);
+}
+
+function isDialogOpen() {
+  return isCollectionPanelOpen() || isActivityPanelOpen();
+}
+
+function showModalBackdrop() {
+  if (modalBackdrop) modalBackdrop.hidden = false;
+}
+
+function hideModalBackdrop() {
+  if (!isDialogOpen() && modalBackdrop) modalBackdrop.hidden = true;
 }
 
 function getCollectionPanelFocusables() {
@@ -458,18 +498,112 @@ function closeCollectionPanel({ restoreFocus = true } = {}) {
   if (!collectionPanel) return;
   collectionPanel.hidden = true;
   changeCollectionButton?.setAttribute("aria-expanded", "false");
+  hideModalBackdrop();
   if (restoreFocus) restoreCollectionPanelFocus();
 }
 
 function openCollectionPanel(event) {
-  if (isSaving || isLoadingCollection || !collectionPanel) return;
+  if (isSaving || isLoadingCollection || isLoadingActivity || isActivityPanelOpen() || !collectionPanel) return;
   window.clearTimeout(wheelTimer);
   wheelTimer = undefined;
   wheelDelta = 0;
   collectionPanelInvoker = event?.currentTarget ?? document.activeElement;
   collectionPanel.hidden = false;
   changeCollectionButton?.setAttribute("aria-expanded", "true");
+  showModalBackdrop();
   focusCollectionPanel();
+}
+
+function getActivityPanelFocusables() {
+  return [closeActivityPanelButton].filter((button) => button && !button.disabled);
+}
+
+function focusActivityPanel() {
+  closeActivityPanelButton?.focus();
+}
+
+function restoreActivityPanelFocus() {
+  const invoker = activityPanelInvoker;
+  activityPanelInvoker = undefined;
+  invoker?.focus();
+}
+
+function trapActivityPanelFocus(event) {
+  const focusables = getActivityPanelFocusables();
+  if (focusables.length === 0) return;
+  event.preventDefault();
+  focusables[0].focus();
+}
+
+function closeActivityPanel({ restoreFocus = true } = {}) {
+  if (!activityPanel) return;
+  activityPanel.hidden = true;
+  activityButton?.setAttribute("aria-expanded", "false");
+  hideModalBackdrop();
+  if (restoreFocus) restoreActivityPanelFocus();
+}
+
+function formatActivityTimestamp(timestamp) {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.valueOf()) ? timestamp : date.toLocaleString();
+}
+
+function renderActivity(events) {
+  if (!activityList || !activityEmpty) return;
+  if (events.length === 0) {
+    activityList.replaceChildren();
+    activityEmpty.textContent = "No activity yet.";
+    activityEmpty.hidden = false;
+    return;
+  }
+  activityEmpty.hidden = true;
+  activityList.replaceChildren(
+    ...events.map((event) => {
+      const item = document.createElement("li");
+      item.className = "activity-entry";
+      const action = event.status === "solved" ? "Solved" : "Revisit";
+      item.textContent = `${action} · ${event.collection_title} · Problem ${event.problem_number} · ${formatActivityTimestamp(event.timestamp)}`;
+      return item;
+    }),
+  );
+}
+
+async function openActivityPanel(event) {
+  if (
+    isSaving ||
+    isLoadingCollection ||
+    isLoadingActivity ||
+    isCollectionPanelOpen() ||
+    !activityPanel
+  ) {
+    return;
+  }
+  activityPanelInvoker = event?.currentTarget ?? document.activeElement;
+  activityPanel.hidden = false;
+  activityButton?.setAttribute("aria-expanded", "true");
+  showModalBackdrop();
+  activityEmpty.hidden = false;
+  activityEmpty.textContent = "Loading activity…";
+  activityList?.replaceChildren();
+  focusActivityPanel();
+  isLoadingActivity = true;
+  if (activityButton) activityButton.disabled = true;
+  try {
+    const { events } = await fetchJson(
+      `/api/activity?user=${encodeURIComponent(user)}&limit=50`,
+    );
+    renderActivity(events);
+  } catch (error) {
+    activityList?.replaceChildren();
+    if (activityEmpty) {
+      activityEmpty.textContent = "Activity could not be loaded.";
+      activityEmpty.hidden = false;
+    }
+    showError(error);
+  } finally {
+    isLoadingActivity = false;
+    if (activityButton) activityButton.disabled = isSaving || isLoadingCollection;
+  }
 }
 
 async function loadActiveCollection(slug, historyMode = "none", shouldApply = () => true) {
@@ -656,6 +790,8 @@ solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
 changeCollectionButton?.addEventListener("click", openCollectionPanel);
 closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
+activityButton?.addEventListener("click", openActivityPanel);
+closeActivityPanelButton?.addEventListener("click", closeActivityPanel);
 window.addEventListener("popstate", loadCollectionFromHistory);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });

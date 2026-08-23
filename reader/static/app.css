@@ -55,7 +55,8 @@ h1 {
 }
 
 .header-content > button,
-.collection-panel button {
+.collection-panel button,
+.activity-panel button {
   min-height: 2.4rem;
   padding: 0.4rem 0.7rem;
   border: 1px solid #7b6a59;
@@ -65,12 +66,14 @@ h1 {
 }
 
 .header-content > button:hover:not(:disabled),
-.collection-panel button:hover:not(:disabled) {
+.collection-panel button:hover:not(:disabled),
+.activity-panel button:hover:not(:disabled) {
   background: #efe5d8;
 }
 
 .header-content > button:disabled,
-.collection-panel button:disabled {
+.collection-panel button:disabled,
+.activity-panel button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -83,7 +86,7 @@ h1 {
 
 .collection-panel {
   position: fixed;
-  z-index: 3;
+  z-index: 4;
   top: 1rem;
   right: 1rem;
   left: 1rem;
@@ -97,7 +100,31 @@ h1 {
   box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
 }
 
-.collection-panel__header {
+.modal-backdrop {
+  position: fixed;
+  z-index: 3;
+  inset: 0;
+  background: rgb(31 26 22 / 35%);
+}
+
+.activity-panel {
+  position: fixed;
+  z-index: 4;
+  top: 1rem;
+  right: 1rem;
+  left: 1rem;
+  width: min(100% - 2rem, 40rem);
+  max-height: calc(100vh - 2rem);
+  margin: 0 auto;
+  overflow: auto;
+  border: 1px solid #7b6a59;
+  border-radius: 0.5rem;
+  background: #f7f3ed;
+  box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
+}
+
+.collection-panel__header,
+.activity-panel__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -106,7 +133,8 @@ h1 {
   border-bottom: 1px solid #d8cec0;
 }
 
-.collection-panel__header h2 {
+.collection-panel__header h2,
+.activity-panel__header h2 {
   margin: 0;
   font-size: 1.1rem;
 }
@@ -117,6 +145,23 @@ h1 {
   margin: 0;
   padding: 1rem;
   list-style: none;
+}
+
+.activity-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 1rem;
+}
+
+.activity-entry,
+.activity-empty {
+  color: #5c5147;
+}
+
+.activity-empty {
+  margin: 0;
+  padding: 1rem;
 }
 
 .collection-option {

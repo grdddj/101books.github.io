@@ -180,8 +180,68 @@ function invalidCollectionBrowserPage() {
     .replace("</body>", `${probe}</body>`);
 }
 
+function activityBrowserPage(basePath = "") {
+  const seed = '<script>localStorage.setItem("static-go-reader-user", "Ada");</script>';
+  const probe = `
+    <pre id="browser-activity-result"></pre>
+    <script>
+      async function waitFor(condition) {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (condition()) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("Timed out waiting for reader state");
+      }
+
+      window.addEventListener("load", async () => {
+        const result = document.querySelector("#browser-activity-result");
+        try {
+          await waitFor(() => document.querySelector("#collection-title").textContent === "200 Basic Go Problems");
+          const activityButton = document.querySelector("#show-activity");
+          const ordinalBeforeArrow = document.querySelector("#problem-ordinal").textContent;
+          activityButton.focus();
+          activityButton.click();
+          await waitFor(() => document.querySelector("#activity-list").children.length === 2);
+          const panel = document.querySelector("#activity-panel");
+          const backdrop = document.querySelector("#modal-backdrop");
+          const closeButton = document.querySelector("#close-activity-panel");
+          const activityEntries = [...document.querySelectorAll("#activity-list li")].map((item) => item.textContent);
+          const panelOpened = !panel.hidden && activityButton.getAttribute("aria-expanded") === "true";
+          const backdropVisible = !backdrop.hidden;
+          const focusEntered = document.activeElement === closeButton;
+          document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }));
+          const tabTrapped = document.activeElement === closeButton;
+          document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }));
+          const readerBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeArrow;
+          closeButton.click();
+          result.textContent = JSON.stringify({
+            panelOpened,
+            backdropVisible,
+            focusEntered,
+            tabTrapped,
+            readerBlocked,
+            closeRestoredFocus: panel.hidden && backdrop.hidden && document.activeElement === activityButton,
+            activityHasTimestamp: activityEntries[0].includes(new Date("2026-08-23T12:34:56Z").toLocaleString()),
+            activityEntries,
+            readOnly: document.querySelectorAll("#activity-panel button").length === 1,
+          });
+        } catch (error) {
+          result.textContent = JSON.stringify({ error: error.message });
+        }
+      });
+    </script>`;
+  return indexSource
+    .replaceAll("__READER_BASE_PATH__", basePath)
+    .replace(
+      `<script>window.READER_BASE_PATH = "${basePath}";</script>`,
+      `${seed}<script>window.READER_BASE_PATH = "${basePath}";</script>`,
+    )
+    .replace("</body>", `${probe}</body>`);
+}
+
 async function startReaderServer(progressPath, basePath = "") {
   const path = (suffix) => `${basePath}${suffix}`;
+  const activityRequests = [];
   const files = {
     [path("/")]: [browserPage(basePath), "text/html; charset=utf-8"],
     [path("/collections/")]: [invalidCollectionBrowserPage(), "text/html; charset=utf-8"],
@@ -228,7 +288,15 @@ async function startReaderServer(progressPath, basePath = "") {
     },
   };
   const server = createServer(async (request, reply) => {
+    const requestUrl = request.url;
     const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+    if (
+      pathname === path("/collections/200-basic-go-problems") &&
+      new URL(request.url, "http://127.0.0.1").searchParams.has("activity")
+    ) {
+      response(reply, 200, activityBrowserPage(basePath), "text/html; charset=utf-8");
+      return;
+    }
     if (files[pathname]) {
       const [body, contentType] = files[pathname];
       response(reply, 200, body, contentType);
@@ -247,12 +315,38 @@ async function startReaderServer(progressPath, basePath = "") {
       response(reply, 200, await readFile(progressPath, "utf8"));
       return;
     }
+    if (pathname === path("/api/activity")) {
+      activityRequests.push(requestUrl);
+      response(
+        reply,
+        200,
+        JSON.stringify({
+          events: [
+            {
+              timestamp: "2026-08-23T12:34:56Z",
+              status: "solved",
+              collection_title: "200 Basic Go Problems",
+              problem_number: 1,
+            },
+            {
+              timestamp: "2026-08-23T12:30:00Z",
+              status: "revisit",
+              collection_title: "Advanced shapes",
+              problem_number: 2,
+            },
+          ],
+        }),
+      );
+      return;
+    }
     response(reply, 404, "Not found", "text/plain; charset=utf-8");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   return {
     server,
+    activityRequests,
+    activityUrl: `http://127.0.0.1:${port}${path("/collections/200-basic-go-problems")}?activity`,
     url: `http://127.0.0.1:${port}${path("/collections/200-basic-go-problems")}`,
     invalidUrl: `http://127.0.0.1:${port}${path("/collections/")}`,
   };
@@ -333,6 +427,44 @@ test("Chromium keeps collection navigation inside a configured base path", { ski
       result.restoredPathname,
       "/tsumego/collections/200-basic-go-problems",
     );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("Chromium opens and closes the read-only activity dialog below a base path", { skip: !chromium }, async () => {
+  const directory = await mkdtemp(join(process.cwd(), ".go-reader-activity-"));
+  const progressPath = join(directory, "progress.json");
+  await writeFile(progressPath, JSON.stringify({ problems: {} }));
+  const { activityRequests, activityUrl, server } = await startReaderServer(
+    progressPath,
+    "/tsumego",
+  );
+  try {
+    const { stdout } = await execFileAsync(chromium, [
+      "--headless=new",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--dump-dom",
+      "--virtual-time-budget=4000",
+      activityUrl,
+    ]);
+    const match = stdout.match(/<pre id="browser-activity-result">([^<]*)<\/pre>/);
+    assert.ok(match, "Chromium did not return the activity test result");
+    const result = JSON.parse(match[1]);
+    assert.deepEqual(activityRequests, ["/tsumego/api/activity?user=Ada&limit=50"]);
+    assert.equal(result.panelOpened, true);
+    assert.equal(result.backdropVisible, true);
+    assert.equal(result.focusEntered, true);
+    assert.equal(result.tabTrapped, true);
+    assert.equal(result.readerBlocked, true);
+    assert.equal(result.closeRestoredFocus, true);
+    assert.equal(result.activityHasTimestamp, true);
+    assert.equal(result.readOnly, true);
+    assert.equal(result.activityEntries.length, 2);
+    assert.match(result.activityEntries[0], /^Solved · 200 Basic Go Problems · Problem 1 · /);
+    assert.match(result.activityEntries[1], /^Revisit · Advanced shapes · Problem 2 · /);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     await rm(directory, { force: true, recursive: true });

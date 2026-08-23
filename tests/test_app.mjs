@@ -7,14 +7,20 @@ const appSource = await readFile(new URL("../reader/static/app.js", import.meta.
 const appCss = await readFile(new URL("../reader/static/app.css", import.meta.url), "utf8");
 
 function createElement(documentState) {
+  const listeners = new Map();
   return {
-    addEventListener() {},
+    addEventListener(event, listener) {
+      listeners.set(event, listener);
+    },
     appended: [],
     append(child) {
       this.appended.push(child);
     },
     attributes: {},
     classList: { toggle() {} },
+    click() {
+      listeners.get("click")?.({ currentTarget: this });
+    },
     contains() {
       return false;
     },
@@ -109,7 +115,13 @@ function loadApp({
       querySelector(selector) {
         if (!elements.has(selector)) {
           const element = createElement(documentState);
-          if (selector === "#collection-panel") element.hidden = true;
+          if (
+            selector === "#collection-panel" ||
+            selector === "#activity-panel" ||
+            selector === "#modal-backdrop"
+          ) {
+            element.hidden = true;
+          }
           elements.set(selector, element);
         }
         return elements.get(selector);
@@ -146,6 +158,7 @@ globalThis.readerTestApi = {
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
+  openActivityPanel: typeof openActivityPanel === "function" ? openActivityPanel : undefined,
   openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
   renderBoard,
@@ -355,6 +368,100 @@ test("a configured base path prefixes API calls and collection history", async (
   ]);
   assert.deepEqual(historyCalls, ["/tsumego/collections/advanced"]);
   assert.equal(context.window.location.pathname, "/tsumego/collections/advanced");
+});
+
+test("the activity dialog loads base-prefixed recent events and restores keyboard focus", async () => {
+  const calls = [];
+  const activityResponse = Promise.withResolvers();
+  const fetchImpl = async (path) => {
+    calls.push(path);
+    if (path === "/tsumego/api/collections") {
+      return response([
+        {
+          slug: "basic",
+          title: "Basic shapes",
+          category: "tsumego",
+          level: "20 kyu",
+          problem_count: 1,
+        },
+      ]);
+    }
+    if (path === "/tsumego/api/collections/basic") {
+      return response({
+        slug: "basic",
+        title: "Basic shapes",
+        problems: [{ id: "basic:1@1", number: 1, black: ["aa"], white: [] }],
+      });
+    }
+    if (path === "/tsumego/api/progress?user=Ada") return response({ problems: {} });
+    if (path === "/tsumego/api/activity?user=Ada&limit=50") {
+      return activityResponse.promise;
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const activityEvents = {
+        events: [
+          {
+            timestamp: "2026-08-23T12:34:56Z",
+            status: "solved",
+            collection_title: "Basic shapes",
+            problem_number: 1,
+          },
+          {
+            timestamp: "2026-08-23T12:30:00Z",
+            status: "revisit",
+            collection_title: "Basic shapes",
+            problem_number: 1,
+          },
+        ],
+  };
+  const { context, documentState, elements } = loadApp({
+    basePath: "/tsumego",
+    fetchImpl,
+    pathname: "/tsumego/collections/basic",
+    promptResult: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+  const activityButton = elements.get("#show-activity");
+  activityButton.focus();
+  const activityOpen = context.readerTestApi.openActivityPanel({ currentTarget: activityButton });
+
+  const panel = elements.get("#activity-panel");
+  const closeButton = elements.get("#close-activity-panel");
+  assert.equal(elements.get("#modal-backdrop").hidden, false);
+  assert.equal(panel.hidden, false);
+  assert.equal(activityButton.attributes["aria-expanded"], "true");
+  assert.equal(documentState.activeElement, closeButton);
+  assert.equal(activityButton.disabled, true);
+  assert.equal(elements.get("#activity-empty").textContent, "Loading activity…");
+  assert.deepEqual(calls.at(-1), "/tsumego/api/activity?user=Ada&limit=50");
+  activityResponse.resolve(response(activityEvents));
+  await activityOpen;
+  assert.deepEqual(
+    elements.get("#activity-list").appended.map((item) => item.textContent),
+    [
+      `Solved · Basic shapes · Problem 1 · ${new Date("2026-08-23T12:34:56Z").toLocaleString()}`,
+      `Revisit · Basic shapes · Problem 1 · ${new Date("2026-08-23T12:30:00Z").toLocaleString()}`,
+    ],
+  );
+
+  const tab = { key: "Tab", preventDefault() { this.prevented = true; } };
+  context.readerTestApi.handleKeydown(tab);
+  assert.equal(tab.prevented, true);
+  assert.equal(documentState.activeElement, closeButton);
+  context.readerTestApi.handleKeydown({ key: "ArrowRight", preventDefault() {} });
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+  context.readerTestApi.handleKeydown({ key: "Escape", preventDefault() {} });
+  assert.equal(panel.hidden, true);
+  assert.equal(elements.get("#modal-backdrop").hidden, true);
+  assert.equal(documentState.activeElement, activityButton);
+
+  await context.readerTestApi.openActivityPanel({ currentTarget: activityButton });
+  closeButton.click();
+  assert.equal(panel.hidden, true);
+  assert.equal(elements.get("#modal-backdrop").hidden, true);
+  assert.equal(documentState.activeElement, activityButton);
 });
 
 test("an unknown collection URL reports an error without loading the first catalog entry", async () => {

@@ -16,6 +16,7 @@ let user;
 let wheelDelta = 0;
 let wheelTimer;
 let lastWheelNavigation = 0;
+let isSaving = false;
 
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
@@ -86,6 +87,31 @@ function renderBoard(problem) {
   board.replaceChildren();
   board.style.setProperty("--board-columns", crop.columns);
   board.style.setProperty("--board-rows", crop.rows);
+  const grid = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  grid.setAttribute("aria-hidden", "true");
+  grid.setAttribute("class", "goban-grid");
+  grid.setAttribute("viewBox", `0 0 ${crop.columns} ${crop.rows}`);
+  for (let column = 0; column < crop.columns; column += 1) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    const position = column + 0.5;
+    line.setAttribute("class", "goban-grid-line goban-grid-line--vertical");
+    line.setAttribute("x1", position);
+    line.setAttribute("x2", position);
+    line.setAttribute("y1", 0.5);
+    line.setAttribute("y2", crop.rows - 0.5);
+    grid.append(line);
+  }
+  for (let row = 0; row < crop.rows; row += 1) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    const position = row + 0.5;
+    line.setAttribute("class", "goban-grid-line goban-grid-line--horizontal");
+    line.setAttribute("x1", 0.5);
+    line.setAttribute("x2", crop.columns - 0.5);
+    line.setAttribute("y1", position);
+    line.setAttribute("y2", position);
+    grid.append(line);
+  }
+  board.append(grid);
   for (const [color, coordinates] of [
     ["black", problem.black],
     ["white", problem.white],
@@ -116,10 +142,10 @@ function renderReader() {
     collectionTitle.textContent = collection.title;
     problemOrdinal.textContent = `Problem ${problem.number} of ${collection.problems.length}`;
     progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
-    previousButton.disabled = currentIndex === 0;
-    nextButton.disabled = collection.problems.length === currentIndex + 1;
-    solvedButton.disabled = false;
-    revisitButton.disabled = false;
+    previousButton.disabled = isSaving || currentIndex === 0;
+    nextButton.disabled = isSaving || collection.problems.length === currentIndex + 1;
+    solvedButton.disabled = isSaving;
+    revisitButton.disabled = isSaving;
     setSelectedStatus(solvedButton, currentStatus === "solved");
     setSelectedStatus(revisitButton, currentStatus === "revisit");
     renderBoard(problem);
@@ -141,26 +167,36 @@ async function setCurrentStatus(status) {
     showError(new Error("Reader is still loading."));
     return;
   }
+  if (isSaving) return;
 
+  const submittedIndex = currentIndex;
+  const problem = collection.problems[submittedIndex];
+  isSaving = true;
+  setControlsDisabled(true);
   try {
-    const problem = collection.problems[currentIndex];
     const savedProgress = await fetchJson("/api/progress", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user, problem_id: problem.id, status }),
     });
     statuses = savedProgress.problems;
-    if (renderReader()) {
-      if (currentIndex < collection.problems.length - 1) navigate(1);
-      statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
+    isSaving = false;
+    const submittedProblemIsCurrent = collection.problems[currentIndex]?.id === problem.id;
+    if (submittedProblemIsCurrent && submittedIndex < collection.problems.length - 1) {
+      navigate(1);
+    } else {
+      renderReader();
     }
+    statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
   } catch (error) {
+    isSaving = false;
+    renderReader();
     statusFeedback.textContent = error.message;
   }
 }
 
 function navigate(delta) {
-  if (!hasCollection()) return;
+  if (!hasCollection() || isSaving) return;
   currentIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),

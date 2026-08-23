@@ -13,12 +13,16 @@ function createElement() {
     append(child) {
       this.appended.push(child);
     },
+    attributes: {},
     classList: { toggle() {} },
     contains() {
       return false;
     },
     replaceChildren() {},
-    setAttribute() {},
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+      if (name === "class") this.className = value;
+    },
     style: {
       setProperty(name, value) {
         this[name] = value;
@@ -42,6 +46,9 @@ function loadApp({ fetchImpl, promptResult, savedName = null }) {
     document: {
       addEventListener() {},
       createElement() {
+        return createElement();
+      },
+      createElementNS() {
         return createElement();
       },
       querySelector(selector) {
@@ -120,7 +127,8 @@ function createFetch({ rejectPut = false } = {}) {
     }
     if (path === "/api/progress" && options.method === "PUT") {
       if (rejectPut) throw new Error("save failed");
-      return response({ problems: {} });
+      const { problem_id: problemId, status } = JSON.parse(options.body);
+      return response({ problems: { [problemId]: { status } } });
     }
     throw new Error(`Unexpected request: ${path}`);
   };
@@ -156,6 +164,10 @@ test("board crops include a one-line margin around the initial stones", () => {
     cropFor({ black: ["jr"], white: ["ks"] }),
     { minColumn: 8, maxColumn: 11, minRow: 16, maxRow: 18, columns: 4, rows: 3 },
   );
+  assert.deepEqual(
+    cropFor({ black: ["ii"], white: ["jj"] }),
+    { minColumn: 7, maxColumn: 10, minRow: 7, maxRow: 10, columns: 4, rows: 4 },
+  );
 });
 
 test("board stones use grid positions relative to the crop", () => {
@@ -185,8 +197,27 @@ test("rectangular crops set matching dimensions and keep grid intervals square",
   );
 });
 
+test("board creates one explicit grid line for every crop row and column", () => {
+  const { context, elements } = loadApp({ promptResult: "Ada" });
+
+  context.readerTestApi.renderBoard({ black: ["be", "hh"], white: [] });
+
+  const grid = elements
+    .get("#board")
+    .appended.find((element) => element.className === "goban-grid");
+  const gridLines = grid.appended;
+  assert.equal(
+    gridLines.filter((line) => line.className.includes("vertical")).length,
+    9,
+  );
+  assert.equal(
+    gridLines.filter((line) => line.className.includes("horizontal")).length,
+    6,
+  );
+});
+
 test("successful status saves advance one problem without passing the final problem", async () => {
-  const { context } = loadApp({ fetchImpl: createFetch(), promptResult: "Ada" });
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), promptResult: "Ada" });
   await context.readerTestApi.startReader();
   context.readerTestApi.navigate(4);
 
@@ -195,6 +226,8 @@ test("successful status saves advance one problem without passing the final prob
 
   await context.readerTestApi.setCurrentStatus("revisit");
   assert.equal(context.readerTestApi.getCurrentIndex(), 5);
+  assert.equal(elements.get("#status-feedback").textContent, "Problem 6 marked revisit.");
+  assert.equal(elements.get("#revisit").attributes["aria-pressed"], "true");
 });
 
 test("failed status saves do not change the current problem", async () => {
@@ -208,4 +241,61 @@ test("failed status saves do not change the current problem", async () => {
   await context.readerTestApi.setCurrentStatus("solved");
 
   assert.equal(context.readerTestApi.getCurrentIndex(), 4);
+});
+
+test("duplicate status actions and navigation are ignored while a save is pending", async () => {
+  const pendingSave = Promise.withResolvers();
+  const problems = createProblems();
+  let putCalls = 0;
+  const fetchImpl = async (path, options = {}) => {
+    if (path === "/api/collection") return response({ title: "Test collection", problems });
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress" && options.method === "PUT") {
+      putCalls += 1;
+      return pendingSave.promise;
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  await context.readerTestApi.startReader();
+  context.readerTestApi.navigate(4);
+
+  const firstSave = context.readerTestApi.setCurrentStatus("solved");
+  const duplicateSave = context.readerTestApi.setCurrentStatus("revisit");
+  context.readerTestApi.navigate(1);
+
+  assert.equal(putCalls, 1);
+  assert.equal(context.readerTestApi.getCurrentIndex(), 4);
+  for (const selector of ["#previous", "#solved", "#revisit", "#next"]) {
+    assert.equal(elements.get(selector).disabled, true);
+  }
+
+  pendingSave.resolve(response({ problems: { "problem-5": { status: "solved" } } }));
+  await Promise.all([firstSave, duplicateSave]);
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 5);
+});
+
+test("a failed pending save retains the visible problem and restores controls", async () => {
+  const pendingSave = Promise.withResolvers();
+  const problems = createProblems();
+  const fetchImpl = async (path, options = {}) => {
+    if (path === "/api/collection") return response({ title: "Test collection", problems });
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress" && options.method === "PUT") return pendingSave.promise;
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  await context.readerTestApi.startReader();
+  context.readerTestApi.navigate(4);
+
+  const save = context.readerTestApi.setCurrentStatus("solved");
+  pendingSave.reject(new Error("save failed"));
+  await save;
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 4);
+  for (const selector of ["#previous", "#solved", "#revisit", "#next"]) {
+    assert.equal(elements.get(selector).disabled, false);
+  }
+  assert.equal(elements.get("#status-feedback").textContent, "save failed");
 });

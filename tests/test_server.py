@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reader.server import load_collection
+from reader.server import load_collection, parse_initial_stones
 
 
 class CollectionTests(unittest.TestCase):
@@ -41,3 +41,17 @@ class CollectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Missing SGF"):
             load_collection(fixture_root)
+
+    def test_parse_initial_stones_ignores_comment_text_and_reads_multiple_values(
+        self,
+    ) -> None:
+        source = r"(;C[hint: AB[tt] AW[uu] and escaped \[brackets\]]AB[aa][bb]AW[cc][dd])"
+
+        black, white = parse_initial_stones(source)
+
+        self.assertEqual(black, ["aa", "bb"])
+        self.assertEqual(white, ["cc", "dd"])
+
+    def test_parse_initial_stones_rejects_invalid_setup_coordinate(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Invalid SGF coordinate: tt"):
+            parse_initial_stones("(;AB[tt])")

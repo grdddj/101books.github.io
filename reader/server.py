@@ -13,15 +13,46 @@ class Problem:
 
 def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
     stones: dict[str, list[str]] = {"AB": [], "AW": []}
-    properties = re.compile(r"\b(AB|AW)((?:\[[^\]]*\])+)")
-    values = re.compile(r"\[([^\]]*)\]")
 
-    for match in properties.finditer(source):
-        property_name, property_values = match.groups()
-        for coordinate in values.findall(property_values):
-            if not re.fullmatch(r"[a-s]{2}", coordinate):
-                raise ValueError(f"Invalid SGF coordinate: {coordinate}")
-            stones[property_name].append(coordinate)
+    def read_value(start: int) -> tuple[str, int]:
+        value: list[str] = []
+        depth = 1
+        index = start + 1
+        while index < len(source):
+            character = source[index]
+            if character == "\\" and index + 1 < len(source):
+                value.extend((character, source[index + 1]))
+                index += 2
+                continue
+            if character == "[":
+                depth += 1
+            elif character == "]":
+                depth -= 1
+                if depth == 0:
+                    return "".join(value), index + 1
+            value.append(character)
+            index += 1
+        raise ValueError("Unterminated SGF property value")
+
+    index = 0
+    while index < len(source):
+        if source[index] == "[":
+            _, index = read_value(index)
+            continue
+        if source[index].isupper():
+            property_start = index
+            while index < len(source) and source[index].isupper():
+                index += 1
+            property_name = source[property_start:index]
+            if index < len(source) and source[index] == "[":
+                while index < len(source) and source[index] == "[":
+                    coordinate, index = read_value(index)
+                    if property_name in stones:
+                        if not re.fullmatch(r"[a-s]{2}", coordinate):
+                            raise ValueError(f"Invalid SGF coordinate: {coordinate}")
+                        stones[property_name].append(coordinate)
+                continue
+        index += 1
 
     return stones["AB"], stones["AW"]
 

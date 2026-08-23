@@ -59,6 +59,36 @@ package; this is a repository layout limitation, not a failing test.
 
 ## Concerns
 
-The parser is intentionally small and regex-based for this task. It assumes
-normal SGF property syntax and does not attempt to implement a complete SGF
-grammar (for example, unusual escaped property values).
+The parser is intentionally small and does not attempt to implement a complete
+SGF grammar. It handles bracketed values, escapes, and nested brackets needed
+to avoid false setup stones in comments.
+
+## Review fix
+
+The original regex could mistake `AB[...]` or `AW[...]` text inside a comment
+for setup stones. Regression coverage was added for comment text, escaped
+brackets, multiple setup values, and invalid setup coordinates.
+
+### Fix RED evidence
+
+Command:
+
+```text
+uv run python -m unittest tests.test_server.CollectionTests.test_parse_initial_stones_ignores_comment_text_and_reads_multiple_values -v
+```
+
+Result: expected failure with `ValueError: Invalid SGF coordinate: tt`, as the
+old regex incorrectly parsed the comment's `AB[tt]` text.
+
+### Fix GREEN evidence
+
+The regex was replaced with a minimal property-aware scanner. It consumes
+bracketed values (including escaped and nested brackets), skips their contents,
+and recognizes only actual uppercase SGF property identifiers. Commands:
+
+```text
+uv run python -m unittest tests.test_server.CollectionTests -v
+uvx ruff check reader/server.py tests/test_server.py
+```
+
+Results: all 4 focused tests passed and Ruff reported `All checks passed!`.

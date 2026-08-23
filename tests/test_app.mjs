@@ -47,6 +47,7 @@ function loadApp({
   const elements = new Map();
   const documentState = { activeElement: null };
   const historyCalls = [];
+  const historyReplaceCalls = [];
   const timers = new Map();
   const windowListeners = new Map();
   let nextTimerId = 0;
@@ -71,6 +72,10 @@ function loadApp({
     history: {
       pushState(_state, _title, path) {
         historyCalls.push(path);
+        location.pathname = path;
+      },
+      replaceState(_state, _title, path) {
+        historyReplaceCalls.push(path);
         location.pathname = path;
       },
     },
@@ -162,6 +167,7 @@ globalThis.readerTestApi = {
     firePopstate,
     flushTimers,
     historyCalls,
+    historyReplaceCalls,
     localStorage,
   };
 }
@@ -298,6 +304,16 @@ test("an unknown collection URL reports an error without loading the first catal
   assert.deepEqual(calls, ["/api/collections"]);
   assert.equal(elements.get("#collection-title").textContent, "");
   assert.match(elements.get("#status-feedback").textContent, /unknown collection/i);
+  assert.equal(elements.get("#change-collection").disabled, false);
+  assert.equal(elements.get("#collection-list").appended.length, 2);
+
+  context.readerTestApi.openCollectionPanel({
+    currentTarget: elements.get("#change-collection"),
+  });
+  await context.readerTestApi.selectCollection("basic");
+
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.equal(context.window.location.pathname, "/collections/basic");
 });
 
 test("only the root and one collection segment are valid reader paths", () => {
@@ -341,6 +357,16 @@ test("an invalid initial path reports an error without loading the saved collect
     assert.deepEqual(calls, ["/api/collections"], pathname);
     assert.equal(elements.get("#collection-title").textContent, "", pathname);
     assert.match(elements.get("#status-feedback").textContent, /invalid collection url/i, pathname);
+    assert.equal(elements.get("#change-collection").disabled, false, pathname);
+    assert.equal(elements.get("#collection-list").appended.length, 2, pathname);
+    if (pathname === "/anything") {
+      context.readerTestApi.openCollectionPanel({
+        currentTarget: elements.get("#change-collection"),
+      });
+      await context.readerTestApi.selectCollection("basic");
+      assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+      assert.equal(context.window.location.pathname, "/collections/basic");
+    }
   }
 });
 
@@ -453,6 +479,10 @@ test("the collection list shows progress states and solved percentages", async (
   assert.match(options[3].appended[0].textContent, /Solved: 1 \(33%\)/);
   assert.match(options[4].appended[0].textContent, /Solved: 2 \(100%\)/);
   assert.match(appCss, /var\(--collection-progress\)/);
+  assert.match(
+    appCss,
+    /\.collection-panel \.collection-option--complete:hover:not\(:disabled\)\s*{[^}]*background:\s*#d9f0e1;/,
+  );
   for (const state of ["started", "partial", "complete"]) {
     assert.match(appCss, new RegExp(`\\.collection-option--${state}`));
   }
@@ -520,6 +550,193 @@ test("popstate rejects an invalid collection path without loading a saved collec
   assert.deepEqual(historyCalls, []);
 });
 
+test("popstate waits for a pending save and then reconciles to the latest URL", async () => {
+  const pendingSave = Promise.withResolvers();
+  const { catalog, collections } = createCollectionFixture();
+  const calls = [];
+  const fetchImpl = async (path, options = {}) => {
+    calls.push(path);
+    if (path === "/api/collections") return response(catalog);
+    if (path.startsWith("/api/collections/")) {
+      return response(collections[decodeURIComponent(path.slice("/api/collections/".length))]);
+    }
+    if (path.startsWith("/api/progress?") && options.method === undefined) {
+      return response({ problems: {} });
+    }
+    if (path === "/api/progress" && options.method === "PUT") {
+      return pendingSave.promise;
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  const save = context.readerTestApi.setCurrentStatus("solved");
+  context.window.location.pathname = "/collections/advanced";
+  const historyLoad = firePopstate();
+
+  assert.equal(calls.filter((path) => path === "/api/collections/advanced").length, 0);
+  pendingSave.resolve(response({ problems: { "basic:1@1": { status: "solved" } } }));
+  await Promise.all([save, historyLoad]);
+
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(context.window.location.pathname, "/collections/advanced");
+});
+
+test("rapid popstate events discard a stale collection load and reconcile the latest URL", async () => {
+  const pendingAdvanced = Promise.withResolvers();
+  const { catalog, collections } = createCollectionFixture();
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") return response(catalog);
+    if (path === "/api/collections/advanced") return pendingAdvanced.promise;
+    if (path === "/api/collections/basic") return response(collections.basic);
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate, localStorage } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.window.location.pathname = "/collections/advanced";
+  const back = firePopstate();
+  context.window.location.pathname = "/collections/basic";
+  const forward = firePopstate();
+  pendingAdvanced.resolve(response(collections.advanced));
+  await Promise.all([back, forward]);
+
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.equal(context.window.location.pathname, "/collections/basic");
+  assert.equal(localStorage.get("static-go-reader-collection"), "basic");
+});
+
+test("popstate suppresses a stale chooser-load failure after loading the requested URL", async () => {
+  const pendingAdvanced = Promise.withResolvers();
+  const advancedRequested = Promise.withResolvers();
+  const { catalog, collections } = createCollectionFixture();
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") return response(catalog);
+    if (path === "/api/collections/advanced") {
+      advancedRequested.resolve();
+      return pendingAdvanced.promise;
+    }
+    if (path === "/api/collections/basic") return response(collections.basic);
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  const selection = context.readerTestApi.selectCollection("advanced");
+  await advancedRequested.promise;
+  context.window.location.pathname = "/collections/basic";
+  const historyLoad = firePopstate();
+  pendingAdvanced.reject(new Error("stale chooser failure"));
+  await Promise.all([selection, historyLoad]);
+
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.doesNotMatch(elements.get("#status-feedback").textContent, /stale chooser failure/i);
+});
+
+test("popstate suppresses a stale startup-load failure after loading the requested URL", async () => {
+  const pendingBasic = Promise.withResolvers();
+  const basicRequested = Promise.withResolvers();
+  const { catalog, collections } = createCollectionFixture();
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") return response(catalog);
+    if (path === "/api/collections/basic") {
+      basicRequested.resolve();
+      return pendingBasic.promise;
+    }
+    if (path === "/api/collections/advanced") return response(collections.advanced);
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+
+  const startup = context.readerTestApi.startReader();
+  await basicRequested.promise;
+  context.window.location.pathname = "/collections/advanced";
+  const historyLoad = firePopstate();
+  pendingBasic.reject(new Error("stale startup failure"));
+  await Promise.all([startup, historyLoad]);
+
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.doesNotMatch(elements.get("#status-feedback").textContent, /stale startup failure/i);
+});
+
+test("a catalog failure during popstate reports the error and settles reconciliation", async () => {
+  const pendingCatalog = Promise.withResolvers();
+  const catalogRequested = Promise.withResolvers();
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") {
+      catalogRequested.resolve();
+      return pendingCatalog.promise;
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+
+  const startup = context.readerTestApi.startReader();
+  await catalogRequested.promise;
+  context.window.location.pathname = "/collections/advanced";
+  let historySettled = false;
+  const historyLoad = firePopstate().then(() => {
+    historySettled = true;
+  });
+  pendingCatalog.reject(new Error("catalog unavailable"));
+  await startup;
+  await Promise.resolve();
+
+  assert.equal(historySettled, true);
+  assert.match(elements.get("#status-feedback").textContent, /catalog unavailable/i);
+  assert.equal(elements.get("#change-collection").disabled, true);
+  await historyLoad;
+});
+
+test("a failed history load restores the URL of the still-visible collection", async () => {
+  const { catalog, collections } = createCollectionFixture();
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") return response(catalog);
+    if (path === "/api/collections/basic") return response(collections.basic);
+    if (path === "/api/collections/advanced") throw new Error("history load failed");
+    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements, firePopstate, historyReplaceCalls } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.window.location.pathname = "/collections/advanced";
+  await firePopstate();
+
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.equal(context.window.location.pathname, "/collections/basic");
+  assert.deepEqual(historyReplaceCalls, ["/collections/basic"]);
+  assert.match(elements.get("#status-feedback").textContent, /history load failed/i);
+});
+
 test("the collection dialog traps focus, restores its invoker, and blocks reader arrows", async () => {
   const { fetchImpl } = createCollectionFetch();
   const { context, documentState, elements } = loadApp({
@@ -573,6 +790,25 @@ test("opening the collection dialog cancels a queued reader wheel navigation", a
   assert.equal(flushTimers(), 0);
   context.readerTestApi.navigate(1);
 
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+});
+
+test("status actions are ignored while the collection dialog is open", async () => {
+  let putCalls = 0;
+  const baseFetch = createFetch();
+  const fetchImpl = async (path, options = {}) => {
+    if (path === "/api/progress" && options.method === "PUT") putCalls += 1;
+    return baseFetch(path, options);
+  };
+  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  await context.readerTestApi.startReader();
+  context.readerTestApi.openCollectionPanel({
+    currentTarget: elements.get("#change-collection"),
+  });
+
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(putCalls, 0);
   assert.equal(context.readerTestApi.getCurrentIndex(), 0);
 });
 

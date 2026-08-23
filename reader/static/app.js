@@ -25,6 +25,12 @@ let isSaving = false;
 let isLoadingCollection = false;
 let collectionButtons = [];
 let collectionPanelInvoker;
+let displayedPathname;
+let pendingHistoryPathname;
+let historyRequestId = 0;
+let historyReconciliationPromise;
+let resolveHistoryReconciliation;
+let isReconcilingHistory = false;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const WHEEL_THRESHOLD = 70;
@@ -77,9 +83,9 @@ function collectionPath(slug) {
   return `/collections/${encodeURIComponent(slug)}`;
 }
 
-function getCollectionPath() {
-  if (window.location.pathname === "/") return { kind: "root" };
-  const match = /^\/collections\/([^/]+)$/.exec(window.location.pathname);
+function getCollectionPath(pathname = window.location.pathname) {
+  if (pathname === "/") return { kind: "root" };
+  const match = /^\/collections\/([^/]+)$/.exec(pathname);
   if (!match) return { kind: "invalid" };
   try {
     const slug = decodeURIComponent(match[1]);
@@ -261,7 +267,7 @@ async function setCurrentStatus(status) {
     showError(new Error("Reader is still loading."));
     return;
   }
-  if (isSaving || isLoadingCollection) return;
+  if (isCollectionPanelOpen() || isSaving || isLoadingCollection) return;
 
   const submittedIndex = currentIndex;
   const problem = collection.problems[submittedIndex];
@@ -275,6 +281,10 @@ async function setCurrentStatus(status) {
     });
     statuses = savedProgress.problems;
     isSaving = false;
+    if (pendingHistoryPathname !== undefined) {
+      startHistoryReconciliation();
+      return;
+    }
     renderCollectionList();
     const submittedProblemIsCurrent = collection.problems[currentIndex]?.id === problem.id;
     if (submittedProblemIsCurrent && submittedIndex < collection.problems.length - 1) {
@@ -285,8 +295,12 @@ async function setCurrentStatus(status) {
     statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
   } catch (error) {
     isSaving = false;
-    renderReader();
     statusFeedback.textContent = error.message;
+    if (pendingHistoryPathname !== undefined) {
+      startHistoryReconciliation();
+      return;
+    }
+    renderReader();
   }
 }
 
@@ -444,9 +458,11 @@ function openCollectionPanel(event) {
   focusCollectionPanel();
 }
 
-async function loadActiveCollection(slug, historyMode = "none") {
+async function loadActiveCollection(slug, historyMode = "none", shouldApply = () => true) {
   const nextCollection = await fetchJson(`/api/collections/${encodeURIComponent(slug)}`);
+  if (!shouldApply()) return false;
   const nextStatuses = (await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`)).problems;
+  if (!shouldApply()) return false;
   collection = nextCollection;
   statuses = nextStatuses;
   currentIndex = firstPendingIndex(collection.problems, statuses);
@@ -455,60 +471,137 @@ async function loadActiveCollection(slug, historyMode = "none") {
   if (historyMode === "push") {
     window.history.pushState({}, "", collectionPath(slug));
   }
+  return true;
+}
+
+function restoreControlsAfterCollectionOperation() {
+  if (hasCollection()) {
+    renderReader();
+    return;
+  }
+  setControlsDisabled(true);
+  setCollectionControlsDisabled(catalog.length === 0);
 }
 
 async function selectCollection(slug) {
   if (isSaving || isLoadingCollection) return;
+  const startingHistoryRequestId = historyRequestId;
   closeCollectionPanel({ restoreFocus: false });
   isLoadingCollection = true;
   setControlsDisabled(true);
   try {
-    await loadActiveCollection(slug, "push");
+    const loaded = await loadActiveCollection(
+      slug,
+      "push",
+      () => startingHistoryRequestId === historyRequestId,
+    );
+    if (!loaded) return;
+    displayedPathname = collectionPath(slug);
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     statusFeedback.textContent = `Selected ${collection.title}.`;
   } catch (error) {
-    showError(error);
+    if (startingHistoryRequestId === historyRequestId) showError(error);
   } finally {
     isLoadingCollection = false;
-    if (hasCollection()) {
-      renderReader();
-      restoreCollectionPanelFocus();
+    restoreControlsAfterCollectionOperation();
+    if (hasCollection()) restoreCollectionPanelFocus();
+    startHistoryReconciliation();
+  }
+}
+
+function getHistoryCollectionSlug(pathname) {
+  const path = getCollectionPath(pathname);
+  if (path.kind === "invalid") {
+    throw new Error("Invalid collection URL.");
+  }
+  const slug = path.kind === "root" ? getSavedCollection(catalog) : path.slug;
+  if (!catalog.some((item) => item.slug === slug)) {
+    throw new Error("Unknown collection in URL.");
+  }
+  return slug;
+}
+
+function restoreDisplayedPath(error) {
+  if (displayedPathname && window.location.pathname !== displayedPathname) {
+    window.history.replaceState({}, "", displayedPathname);
+  }
+  showError(error);
+}
+
+async function reconcileHistory() {
+  while (pendingHistoryPathname !== undefined) {
+    const pathname = pendingHistoryPathname;
+    const requestId = historyRequestId;
+    try {
+      const slug = getHistoryCollectionSlug(pathname);
+      const loaded = await loadActiveCollection(
+        slug,
+        "none",
+        () => requestId === historyRequestId,
+      );
+      if (!loaded) continue;
+      displayedPathname = pathname;
+      localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
+      pendingHistoryPathname = undefined;
+    } catch (error) {
+      if (requestId !== historyRequestId) continue;
+      pendingHistoryPathname = undefined;
+      restoreDisplayedPath(error);
     }
   }
 }
 
-async function loadCollectionFromHistory() {
-  if (isSaving || isLoadingCollection) return;
-  const path = getCollectionPath();
-  if (path.kind === "invalid") {
-    showError(new Error("Invalid collection URL."));
-    return;
-  }
-  const slug = path.kind === "root" ? getSavedCollection(catalog) : path.slug;
-  if (!catalog.some((item) => item.slug === slug)) {
-    showError(new Error("Unknown collection in URL."));
-    return;
-  }
+function finishHistoryReconciliation() {
+  isReconcilingHistory = false;
+  isLoadingCollection = false;
+  restoreControlsAfterCollectionOperation();
+  settleHistoryReconciliation();
+}
 
+function settleHistoryReconciliation() {
+  const resolve = resolveHistoryReconciliation;
+  historyReconciliationPromise = undefined;
+  resolveHistoryReconciliation = undefined;
+  resolve?.();
+}
+
+function startHistoryReconciliation() {
+  if (
+    !historyReconciliationPromise ||
+    isReconcilingHistory ||
+    isSaving ||
+    isLoadingCollection ||
+    catalog.length === 0
+  ) {
+    return;
+  }
+  isReconcilingHistory = true;
   isLoadingCollection = true;
   setControlsDisabled(true);
-  try {
-    await loadActiveCollection(slug);
-    localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
-  } catch (error) {
-    showError(error);
-  } finally {
-    isLoadingCollection = false;
-    if (hasCollection()) renderReader();
+  void reconcileHistory().finally(finishHistoryReconciliation);
+}
+
+function loadCollectionFromHistory() {
+  pendingHistoryPathname = window.location.pathname;
+  historyRequestId += 1;
+  if (!historyReconciliationPromise) {
+    historyReconciliationPromise = new Promise((resolve) => {
+      resolveHistoryReconciliation = resolve;
+    });
   }
+  startHistoryReconciliation();
+  return historyReconciliationPromise;
 }
 
 async function startReader() {
+  const startingHistoryRequestId = historyRequestId;
+  let startupStage = "catalog";
   isLoadingCollection = true;
   try {
     setControlsDisabled(true);
     user = getOrPromptUser();
     catalog = await fetchJson("/api/collections");
+    renderCollectionList();
     const path = getCollectionPath();
     if (path.kind === "invalid") {
       throw new Error("Invalid collection URL.");
@@ -517,14 +610,29 @@ async function startReader() {
       throw new Error("Unknown collection in URL.");
     }
     const slug = path.kind === "collection" ? path.slug : getSavedCollection(catalog);
+    const pathname = window.location.pathname;
+    startupStage = "collection";
+    const loaded = await loadActiveCollection(
+      slug,
+      "none",
+      () => startingHistoryRequestId === historyRequestId,
+    );
+    if (!loaded) return;
+    displayedPathname = pathname;
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
-    await loadActiveCollection(slug);
     statusFeedback.textContent = `Tracking progress for ${user}.`;
   } catch (error) {
-    showError(error);
+    if (startupStage === "catalog") {
+      pendingHistoryPathname = undefined;
+      settleHistoryReconciliation();
+      showError(error);
+    } else if (startingHistoryRequestId === historyRequestId) {
+      showError(error);
+    }
   } finally {
     isLoadingCollection = false;
-    if (hasCollection()) renderReader();
+    restoreControlsAfterCollectionOperation();
+    startHistoryReconciliation();
   }
 }
 

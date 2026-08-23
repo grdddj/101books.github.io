@@ -54,8 +54,13 @@ function browserPage() {
         try {
           await waitFor(() => !document.querySelector("#change-collection").disabled);
           const changeButton = document.querySelector("#change-collection");
+          const reader = document.querySelector("#app");
+          const ordinalBeforeQueuedWheel = document.querySelector("#problem-ordinal").textContent;
+          reader.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 100 }));
           changeButton.focus();
           changeButton.click();
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          const queuedWheelBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeQueuedWheel;
           const panel = document.querySelector("#collection-panel");
           const options = [...document.querySelectorAll("[data-collection-slug]")];
           const visibleCatalog = options.map((option) => option.textContent);
@@ -73,7 +78,7 @@ function browserPage() {
           const ordinalBeforeArrow = document.querySelector("#problem-ordinal").textContent;
           dispatchKey("ArrowRight");
           const readerBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeArrow;
-          document.querySelector("#app").dispatchEvent(
+          reader.dispatchEvent(
             new WheelEvent("wheel", { bubbles: true, deltaY: 100 }),
           );
           await new Promise((resolve) => setTimeout(resolve, 200));
@@ -89,6 +94,7 @@ function browserPage() {
           result.textContent = JSON.stringify({
             panelOpened,
             visibleCatalog,
+            queuedWheelBlocked,
             focusEntered,
             forwardTabTrapped,
             forwardWrapTrapped,
@@ -187,7 +193,7 @@ test("Chromium changes collections with catalog order and collection-scoped prog
     progressPath,
     JSON.stringify({
       problems: {
-        "basic:1@1": { status: "solved" },
+        "basic:2@1": { status: "solved" },
         "advanced:1@1": { status: "solved" },
         "advanced:2@1": { status: "revisit" },
       },
@@ -211,6 +217,7 @@ test("Chromium changes collections with catalog order and collection-scoped prog
         "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 1 · Revisit: 0",
         "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 · Revisit: 1",
       ],
+      queuedWheelBlocked: true,
       focusEntered: true,
       forwardTabTrapped: true,
       forwardWrapTrapped: true,

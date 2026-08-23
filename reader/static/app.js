@@ -255,7 +255,7 @@ async function setCurrentStatus(status) {
 }
 
 function navigate(delta) {
-  if (!hasCollection() || isSaving || isLoadingCollection) return;
+  if (!hasCollection() || isSaving || isLoadingCollection || isCollectionPanelOpen()) return;
   currentIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),
@@ -399,6 +399,9 @@ function closeCollectionPanel({ restoreFocus = true } = {}) {
 
 function openCollectionPanel(event) {
   if (isSaving || isLoadingCollection || !collectionPanel) return;
+  window.clearTimeout(wheelTimer);
+  wheelTimer = undefined;
+  wheelDelta = 0;
   collectionPanelInvoker = event?.currentTarget ?? document.activeElement;
   collectionPanel.hidden = false;
   changeCollectionButton?.setAttribute("aria-expanded", "true");

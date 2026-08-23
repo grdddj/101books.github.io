@@ -40,6 +40,14 @@ function createElement(documentState) {
 function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = null }) {
   const elements = new Map();
   const documentState = { activeElement: null };
+  const timers = new Map();
+  let nextTimerId = 0;
+  const clearTimer = (timerId) => timers.delete(timerId);
+  const setTimer = (callback) => {
+    nextTimerId += 1;
+    timers.set(nextTimerId, callback);
+    return nextTimerId;
+  };
   const localStorage = new Map(
     [
       ["static-go-reader-user", savedName],
@@ -53,7 +61,7 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
     Array,
     Object,
     String,
-    clearTimeout() {},
+    clearTimeout: clearTimer,
     document: {
       get activeElement() {
         return documentState.activeElement;
@@ -66,7 +74,11 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
         return createElement(documentState);
       },
       querySelector(selector) {
-        if (!elements.has(selector)) elements.set(selector, createElement(documentState));
+        if (!elements.has(selector)) {
+          const element = createElement(documentState);
+          if (selector === "#collection-panel") element.hidden = true;
+          elements.set(selector, element);
+        }
         return elements.get(selector);
       },
     },
@@ -83,17 +95,13 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
         localStorage.set(key, value);
       },
     },
-    setTimeout() {
-      return 0;
-    },
+    setTimeout: setTimer,
     window: {
-      clearTimeout() {},
+      clearTimeout: clearTimer,
       prompt() {
         return promptResult;
       },
-      setTimeout() {
-        return 0;
-      },
+      setTimeout: setTimer,
     },
   };
   context.globalThis = context;
@@ -103,12 +111,14 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
 globalThis.readerTestApi = {
   getBoardCrop: typeof getBoardCrop === "function" ? getBoardCrop : undefined,
   handleKeydown: typeof handleKeydown === "function" ? handleKeydown : undefined,
+  handleWheel: typeof handleWheel === "function" ? handleWheel : undefined,
   getCurrentIndex: () => currentIndex,
   getOrPromptUser,
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
   openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
+  queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -116,7 +126,13 @@ globalThis.readerTestApi = {
 };`,
   );
   vm.runInNewContext(sourceWithoutStartup, context, { filename: "app.js" });
-  return { context, documentState, elements, localStorage };
+  const flushTimers = () => {
+    const callbacks = [...timers.values()];
+    timers.clear();
+    callbacks.forEach((callback) => callback());
+    return callbacks.length;
+  };
+  return { context, documentState, elements, flushTimers, localStorage };
 }
 
 function response(body) {
@@ -333,6 +349,24 @@ test("the collection dialog traps focus, restores its invoker, and blocks reader
   context.readerTestApi.handleKeydown({ key: "Escape", preventDefault() {} });
   assert.equal(elements.get("#collection-panel").hidden, true);
   assert.equal(documentState.activeElement, changeButton);
+});
+
+test("opening the collection dialog cancels a queued reader wheel navigation", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements, flushTimers } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "basic",
+  });
+  await context.readerTestApi.startReader();
+  const changeButton = elements.get("#change-collection");
+
+  context.readerTestApi.queueReaderWheel();
+  context.readerTestApi.openCollectionPanel({ currentTarget: changeButton });
+  assert.equal(flushTimers(), 0);
+  context.readerTestApi.navigate(1);
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
 });
 
 test("invalid saved name is discarded before a normalized replacement is stored", () => {

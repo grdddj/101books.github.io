@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import unittest
 from datetime import datetime
@@ -9,6 +10,7 @@ from urllib.request import Request, urlopen
 
 from reader.server import (
     ProgressStore,
+    StorageCorruptionError,
     create_server,
     load_collection,
     parse_initial_stones,
@@ -68,6 +70,12 @@ class CollectionTests(unittest.TestCase):
         self,
     ) -> None:
         black, white = parse_initial_stones("(;C[hint: [ordinary text]AB[aa])")
+
+        self.assertEqual(black, ["aa"])
+        self.assertEqual(white, [])
+
+    def test_parse_initial_stones_reads_setup_from_root_node_only(self) -> None:
+        black, white = parse_initial_stones("(;AB[aa];B[bb]AB[cc])")
 
         self.assertEqual(black, ["aa"])
         self.assertEqual(white, [])
@@ -172,6 +180,51 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertTrue(second_update_done.is_set())
         self.assertEqual(set(store.get_user("Ada")), {"24176/174139", "24176/174140"})
 
+    def test_progress_store_rejects_corrupt_nested_schema(self) -> None:
+        path = self.root / "progress.json"
+        store = ProgressStore(path, {"24176/174139"})
+        corrupted_documents = [
+            {"users": []},
+            {"users": {}, "version": 1},
+            {"users": {"Ada": []}},
+            {"users": {" Ada": {"problems": {}}}},
+            {"users": {" ": {"problems": {}}}},
+            {"users": {"Ada": {}}},
+            {"users": {"Ada": {"problems": {}, "extra": True}}},
+            {"users": {"Ada": {"problems": []}}},
+            {"users": {"Ada": {"problems": {"unknown": {}}}}},
+            {
+                "users": {
+                    "Ada": {
+                        "problems": {
+                            "24176/174139": {
+                                "status": "unseen",
+                                "updated_at": "2026-08-23T12:00:00Z",
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "users": {
+                    "Ada": {
+                        "problems": {
+                            "24176/174139": {
+                                "status": "solved",
+                                "updated_at": "not-a-timestamp",
+                            }
+                        }
+                    }
+                }
+            },
+        ]
+
+        for data in corrupted_documents:
+            with self.subTest(data=data):
+                path.write_text(json.dumps(data))
+                with self.assertRaises(StorageCorruptionError):
+                    store.get_user("Ada")
+
 
 class HttpApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -255,6 +308,63 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertIn("error", response)
 
+    def test_progress_get_returns_server_error_for_malformed_nested_storage(self) -> None:
+        progress_path = self.root / "reader-data/progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_text(json.dumps({"users": {"Ada": {"problems": []}}}))
+
+        status, response = self.request_json("/api/progress?user=Ada")
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+
+    def test_progress_put_returns_server_error_for_invalid_persisted_record(self) -> None:
+        progress_path = self.root / "reader-data/progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "users": {
+                        "Ada": {
+                            "problems": {
+                                "24176/174140": {
+                                    "status": "unseen",
+                                    "updated_at": "2026-08-23T12:00:00Z",
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+
+        status, response = self.request_json(
+            "/api/progress",
+            method="PUT",
+            data=json.dumps(
+                {"user": "Ada", "problem_id": "24176/174140", "status": "solved"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+
+    def test_progress_put_rejects_missing_or_negative_content_length(self) -> None:
+        for content_length in (None, "-1"):
+            with self.subTest(content_length=content_length):
+                headers = [] if content_length is None else [f"Content-Length: {content_length}"]
+                status, response = self.raw_put_progress(headers)
+
+                self.assertEqual(status, 400)
+                self.assertIn("error", response)
+
+    def test_progress_put_rejects_oversized_content_length_without_reading_body(self) -> None:
+        status, response = self.raw_put_progress(["Content-Length: 16385"])
+
+        self.assertEqual(status, 413)
+        self.assertIn("error", response)
+
     def _make_fixture_collection(self) -> None:
         books_directory = self.root / "books"
         books_directory.mkdir()
@@ -292,3 +402,18 @@ class HttpApiTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def raw_put_progress(self, headers: list[str]) -> tuple[int, dict[str, object]]:
+        request_lines = ["PUT /api/progress HTTP/1.1", "Host: 127.0.0.1", *headers, "", ""]
+        with socket.create_connection(
+            ("127.0.0.1", self.server.server_address[1]), timeout=1
+        ) as client:
+            client.sendall("\r\n".join(request_lines).encode())
+            client.shutdown(socket.SHUT_WR)
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+
+        header, body = bytes(response).split(b"\r\n\r\n", maxsplit=1)
+        status = int(header.splitlines()[0].split()[1])
+        return status, json.loads(body)

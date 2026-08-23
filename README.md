@@ -18,7 +18,7 @@ uvx ruff check reader tests
 Open `http://127.0.0.1:8000/` after starting the server. The reader asks for a
 display name once per browser. Progress is stored locally in
 `reader-data/progress.json`; this directory is intentionally ignored by Git.
-The progress model is one process-local server and a JSON file, so it is not a
-shared or multi-user service.
+Several unauthenticated browser-local profiles can use the same local process,
+but the progress model is not a shared or network service.
 
 The reader intentionally does not allow stone placement or reveal solutions.

@@ -30,12 +30,23 @@ async function fetchJson(path, options = {}) {
 
 function getOrPromptUser() {
   const key = "static-go-reader-user";
-  const existing = localStorage.getItem(key);
-  if (existing) return existing;
-  const name = window.prompt("Your name for local progress:", "")?.trim();
-  if (!name) throw new Error("A name is required to track progress.");
+  const existing = normalizeUserName(localStorage.getItem(key));
+  if (existing) {
+    localStorage.setItem(key, existing);
+    return existing;
+  }
+
+  localStorage.removeItem(key);
+  const name = normalizeUserName(window.prompt("Your name for local progress:", ""));
+  if (!name) throw new Error("A valid name is required to track progress.");
   localStorage.setItem(key, name);
   return name;
+}
+
+function normalizeUserName(name) {
+  if (typeof name !== "string") return null;
+  const normalized = name.trim();
+  return normalized && normalized.length <= 80 ? normalized : null;
 }
 
 function firstPendingIndex(problems, statuses) {

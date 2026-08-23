@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
+MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
+
 
 @dataclass(frozen=True)
 class Problem:
@@ -19,6 +21,10 @@ class Problem:
     problem_id: str
     black: list[str]
     white: list[str]
+
+
+class StorageCorruptionError(Exception):
+    """Raised when the persisted progress document does not match its schema."""
 
 
 class ProgressStore:
@@ -64,12 +70,55 @@ class ProgressStore:
         return normalized
 
     def _read(self) -> dict[str, dict[str, object]]:
-        if not self.path.is_file():
+        if not self.path.exists():
             return {"users": {}}
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
-            raise TypeError("Invalid progress data")
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
+            raise StorageCorruptionError("Progress storage is corrupted") from error
+
+        self._validate_data(data)
         return data
+
+    def _validate_data(self, data: object) -> None:
+        if not isinstance(data, dict) or set(data) != {"users"}:
+            raise StorageCorruptionError("Progress storage is corrupted")
+        users = data["users"]
+        if not isinstance(users, dict):
+            raise StorageCorruptionError("Progress storage is corrupted")
+
+        for user, user_data in users.items():
+            if not isinstance(user, str) or not user or user != user.strip() or len(user) > 80:
+                raise StorageCorruptionError("Progress storage is corrupted")
+            if not isinstance(user_data, dict) or set(user_data) != {"problems"}:
+                raise StorageCorruptionError("Progress storage is corrupted")
+            problems = user_data["problems"]
+            if not isinstance(problems, dict):
+                raise StorageCorruptionError("Progress storage is corrupted")
+            for problem_id, record in problems.items():
+                self._validate_record(problem_id, record)
+
+    def _validate_record(self, problem_id: object, record: object) -> None:
+        if not isinstance(problem_id, str) or problem_id not in self.problem_ids:
+            raise StorageCorruptionError("Progress storage is corrupted")
+        if not isinstance(record, dict) or set(record) != {"status", "updated_at"}:
+            raise StorageCorruptionError("Progress storage is corrupted")
+        status = record["status"]
+        timestamp = record["updated_at"]
+        if not isinstance(status, str) or status not in self._STATUSES - {"unseen"}:
+            raise StorageCorruptionError("Progress storage is corrupted")
+        if not isinstance(timestamp, str) or not self._is_utc_timestamp(timestamp):
+            raise StorageCorruptionError("Progress storage is corrupted")
+
+    @staticmethod
+    def _is_utc_timestamp(timestamp: str) -> bool:
+        if not timestamp.endswith("Z"):
+            return False
+        try:
+            parsed = datetime.fromisoformat(f"{timestamp[:-1]}+00:00")
+        except ValueError:
+            return False
+        return parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
 
     def _write(self, data: dict[str, dict[str, object]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,7 +153,7 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
         while index < len(source):
             character = source[index]
             if character == "\\" and index + 1 < len(source):
-                value.extend((character, source[index + 1]))
+                value.append(source[index + 1])
                 index += 2
                 continue
             if character == "]":
@@ -113,25 +162,34 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
             index += 1
         raise ValueError("Unterminated SGF property value")
 
-    index = 0
-    while index < len(source):
-        if source[index] == "[":
-            _, index = read_value(index)
-            continue
-        if source[index].isupper():
-            property_start = index
-            while index < len(source) and source[index].isupper():
-                index += 1
-            property_name = source[property_start:index]
-            if index < len(source) and source[index] == "[":
-                while index < len(source) and source[index] == "[":
-                    coordinate, index = read_value(index)
-                    if property_name in stones:
-                        if not re.fullmatch(r"[a-s]{2}", coordinate):
-                            raise ValueError(f"Invalid SGF coordinate: {coordinate}")
-                        stones[property_name].append(coordinate)
-                continue
+    index = source.find("(")
+    if index == -1:
+        raise ValueError("Missing SGF game tree")
+    index += 1
+    while index < len(source) and source[index].isspace():
         index += 1
+    if index == len(source) or source[index] != ";":
+        raise ValueError("Missing SGF root node")
+    index += 1
+
+    while index < len(source):
+        while index < len(source) and source[index].isspace():
+            index += 1
+        if index == len(source) or source[index] in ";()":
+            break
+        property_start = index
+        while index < len(source) and source[index].isupper():
+            index += 1
+        property_name = source[property_start:index]
+        if not property_name or index == len(source) or source[index] != "[":
+            raise ValueError("Invalid SGF root property")
+        while index < len(source) and source[index] == "[":
+            coordinate, index = read_value(index)
+            if property_name not in stones:
+                continue
+            if not re.fullmatch(r"[a-s]{2}", coordinate):
+                raise ValueError(f"Invalid SGF coordinate: {coordinate}")
+            stones[property_name].append(coordinate)
 
     return stones["AB"], stones["AW"]
 
@@ -188,12 +246,15 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            content_length = int(self.headers.get("Content-Length", ""))
+            content_length = self._content_length()
             payload = json.loads(self.rfile.read(content_length))
             if not isinstance(payload, dict) or not all(
                 isinstance(payload.get(key), str) for key in ("user", "problem_id", "status")
             ):
                 raise ValueError("Invalid progress payload")
+        except OverflowError:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
+            return
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -202,17 +263,11 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             problems = self.progress_store.set_status(
                 payload["user"], payload["problem_id"], payload["status"]
             )
-        except UnicodeDecodeError as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
-            return
-        except json.JSONDecodeError as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
-            return
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
-        except (OSError, TypeError) as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+        except (OSError, StorageCorruptionError):
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
             return
 
         self._send_json(HTTPStatus.OK, {"problems": problems})
@@ -224,19 +279,25 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             return
         try:
             problems = self.progress_store.get_user(users[0])
-        except UnicodeDecodeError as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
-            return
-        except json.JSONDecodeError as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
-            return
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
-        except (OSError, TypeError) as error:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+        except (OSError, StorageCorruptionError):
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
             return
         self._send_json(HTTPStatus.OK, {"problems": problems})
+
+    def _content_length(self) -> int:
+        header_value = self.headers.get("Content-Length")
+        if header_value is None or not re.fullmatch(r"[0-9]+", header_value):
+            raise ValueError("Content-Length must be a non-negative decimal integer")
+        content_length = int(header_value)
+        if content_length > MAX_PROGRESS_REQUEST_BODY_BYTES:
+            raise OverflowError
+        return content_length
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        self.log_message('"%s %s %s"', self.command, urlsplit(self.path).path, str(code))
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json(status, {"error": message})

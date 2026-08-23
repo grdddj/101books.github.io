@@ -126,9 +126,56 @@ function browserPage() {
     .replace("</body>", `${probe}</body>`);
 }
 
+function invalidCollectionBrowserPage() {
+  const seed = `<script>
+    localStorage.setItem("static-go-reader-user", "Ada");
+    localStorage.setItem("static-go-reader-collection", "advanced");
+  </script>`;
+  const probe = `
+    <pre id="browser-invalid-collection-result"></pre>
+    <script>
+      async function waitFor(condition) {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (condition()) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("Timed out waiting for reader state");
+      }
+
+      window.addEventListener("load", async () => {
+        const result = document.querySelector("#browser-invalid-collection-result");
+        try {
+          await waitFor(() => /invalid collection url/i.test(
+            document.querySelector("#status-feedback").textContent,
+          ));
+          const initialTitle = document.querySelector("#collection-title").textContent;
+          const changeButton = document.querySelector("#change-collection");
+          const options = [...document.querySelectorAll("[data-collection-slug]")];
+          const chooserEnabled = !changeButton.disabled && options.every((option) => !option.disabled);
+          changeButton.click();
+          options[0].click();
+          await waitFor(() => document.querySelector("#collection-title").textContent === "200 Basic Go Problems");
+          result.textContent = JSON.stringify({
+            initialTitle,
+            chooserEnabled,
+            optionCount: options.length,
+            recoveredTitle: document.querySelector("#collection-title").textContent,
+            recoveredPathname: window.location.pathname,
+          });
+        } catch (error) {
+          result.textContent = JSON.stringify({ error: error.message });
+        }
+      });
+    </script>`;
+  return indexSource
+    .replace('<script src="/app.js" defer></script>', `${seed}<script src="/app.js" defer></script>`)
+    .replace("</body>", `${probe}</body>`);
+}
+
 async function startReaderServer(progressPath) {
   const files = {
     "/": [browserPage(), "text/html; charset=utf-8"],
+    "/collections/": [invalidCollectionBrowserPage(), "text/html; charset=utf-8"],
     "/collections/200-basic-go-problems": [browserPage(), "text/html; charset=utf-8"],
     "/app.js": [appSource, "text/javascript; charset=utf-8"],
     "/app.css": [appCss, "text/css; charset=utf-8"],
@@ -192,7 +239,11 @@ async function startReaderServer(progressPath) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
-  return { server, url: `http://127.0.0.1:${port}/collections/200-basic-go-problems` };
+  return {
+    server,
+    url: `http://127.0.0.1:${port}/collections/200-basic-go-problems`,
+    invalidUrl: `http://127.0.0.1:${port}/collections/`,
+  };
 }
 
 test("Chromium loads a collection URL and restores it with browser Back", { skip: !chromium }, async () => {
@@ -241,6 +292,37 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
       selectedCollection: "advanced",
       progress: "Solved: 1 · Revisit: 1 · Total: 3",
       selectionRestoredFocus: true,
+    });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("Chromium recovers from the direct invalid collection route", { skip: !chromium }, async () => {
+  const directory = await mkdtemp(join(process.cwd(), ".go-reader-invalid-collection-"));
+  const progressPath = join(directory, "progress.json");
+  await writeFile(progressPath, JSON.stringify({ problems: {} }));
+  const { server, invalidUrl } = await startReaderServer(progressPath);
+  try {
+    const { stdout } = await execFileAsync(chromium, [
+      "--headless=new",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--dump-dom",
+      "--virtual-time-budget=4000",
+      invalidUrl,
+    ]);
+    const match = stdout.match(
+      /<pre id="browser-invalid-collection-result">([^<]*)<\/pre>/,
+    );
+    assert.ok(match, "Chromium did not return the invalid-route recovery result");
+    assert.deepEqual(JSON.parse(match[1]), {
+      initialTitle: "Go problem reader",
+      chooserEnabled: true,
+      optionCount: 2,
+      recoveredTitle: "200 Basic Go Problems",
+      recoveredPathname: "/collections/200-basic-go-problems",
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

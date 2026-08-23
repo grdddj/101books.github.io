@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
 
@@ -385,7 +385,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         if request.path.startswith("/api/"):
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
             return
-        if re.fullmatch(r"/collections/[^/]+", request.path):
+        if re.fullmatch(r"/collections/(?:[^/]+)?", unquote(request.path)):
             self.path = "/"
         super().do_GET()
 

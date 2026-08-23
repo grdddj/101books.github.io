@@ -450,22 +450,30 @@ class HttpApiTests(unittest.TestCase):
         self.assertNotIn("problems", catalog_entry)
 
     def test_collection_reader_path_serves_reader_shell(self) -> None:
-        with urlopen(f"{self.base_url}/collections/200-basic-go-problems") as response:
-            body = response.read().decode("utf-8")
+        for path in ["/collections/200-basic-go-problems", "/collections/"]:
+            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+                body = response.read().decode("utf-8")
 
-        self.assertEqual(response.status, 200)
-        self.assertIn('id="collection-list"', body)
+                self.assertEqual(response.status, 200)
+                self.assertIn('id="collection-list"', body)
 
     def test_api_catalog_stays_json_and_nested_collection_path_is_not_reader_route(self) -> None:
         status, response = self.request_json("/api/collections")
         self.assertEqual(status, 200)
         self.assertIsInstance(response, list)
 
-        request = Request(f"{self.base_url}/collections/one/two")
-        with self.assertRaises(HTTPError) as error:
-            urlopen(request)
+        for path in [
+            "/collections/one/two",
+            "/collections/one%2Ftwo",
+            "/collections//",
+            "/collections/one/",
+        ]:
+            with self.subTest(path=path):
+                request = Request(f"{self.base_url}{path}")
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(request)
 
-        self.assertEqual(error.exception.code, 404)
+                self.assertEqual(error.exception.code, 404)
 
     def test_collection_endpoint_returns_initial_positions(self) -> None:
         response = self.get_json("/api/collections/200-basic-go-problems")

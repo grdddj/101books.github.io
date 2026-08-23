@@ -3,8 +3,8 @@
 ## Goal
 
 Make the collection chooser visually distinguish untouched, started, partially
-solved, and finished booklets without changing the reader's static training
-experience.
+solved, and finished booklets, and give each booklet a shareable URL without
+changing the reader's static training experience.
 
 ## Progress rule
 
@@ -28,10 +28,29 @@ will add the solved percentage for non-visual users.
 The selected collection is still selectable regardless of status.  The dialog
 continues to trap focus and block background reader navigation.
 
+## Collection URLs
+
+- Each collection uses the canonical path `/collections/<slug>`.
+- Selecting a collection fetches it successfully before `history.pushState`
+  adds its canonical URL.  A failed selection leaves both the visible
+  collection and current URL unchanged.
+- Opening or refreshing a valid collection path serves the reader shell, then
+  loads the slug from the path.  The local Python server must route this path
+  to the static reader page rather than return a file-not-found response.
+- A missing or unknown slug produces the reader's recoverable error state; it
+  does not silently fall back to another collection.
+- Browser Back and Forward handle `popstate`, load the collection represented
+  by the new path, and do not create an additional history entry.
+- The root reader URL continues to use the saved last collection from local
+  storage.
+
 ## Testing and documentation
 
 Frontend unit tests will cover untouched, revisit-only, partially solved, and
 fully solved catalog rows, including the percentage data passed to styling.
-Existing browser tests will continue to cover catalog selection and dialog
-behaviour.  README changes are unnecessary because this is a visual refinement
-of the documented collection chooser, not a new command or persistence model.
+They will also cover parsing valid and invalid collection paths, successful
+selection URL updates, and history navigation without duplicate entries.
+Server tests will cover serving the reader shell at a collection path while
+preserving API routing. Existing browser tests will cover deep linking,
+selection, and dialog behaviour. README will document the canonical collection
+URLs because they are a new user-facing reader workflow.

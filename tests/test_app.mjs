@@ -37,10 +37,18 @@ function createElement(documentState) {
   };
 }
 
-function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = null }) {
+function loadApp({
+  fetchImpl,
+  promptResult,
+  savedName = null,
+  savedCollection = null,
+  pathname = "/",
+}) {
   const elements = new Map();
   const documentState = { activeElement: null };
+  const historyCalls = [];
   const timers = new Map();
+  const windowListeners = new Map();
   let nextTimerId = 0;
   const clearTimer = (timerId) => timers.delete(timerId);
   const setTimer = (callback) => {
@@ -54,6 +62,24 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
       ["static-go-reader-collection", savedCollection],
     ].filter(([, value]) => value !== null),
   );
+  const location = { pathname };
+  const window = {
+    addEventListener(event, listener) {
+      windowListeners.set(event, listener);
+    },
+    clearTimeout: clearTimer,
+    history: {
+      pushState(_state, _title, path) {
+        historyCalls.push(path);
+        location.pathname = path;
+      },
+    },
+    location,
+    prompt() {
+      return promptResult;
+    },
+    setTimeout: setTimer,
+  };
   const context = {
     Date,
     Error,
@@ -96,13 +122,7 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
       },
     },
     setTimeout: setTimer,
-    window: {
-      clearTimeout: clearTimer,
-      prompt() {
-        return promptResult;
-      },
-      setTimeout: setTimer,
-    },
+    window,
   };
   context.globalThis = context;
   const sourceWithoutStartup = appSource.replace(
@@ -112,6 +132,7 @@ globalThis.readerTestApi = {
   getBoardCrop: typeof getBoardCrop === "function" ? getBoardCrop : undefined,
   handleKeydown: typeof handleKeydown === "function" ? handleKeydown : undefined,
   handleWheel: typeof handleWheel === "function" ? handleWheel : undefined,
+  getCollectionSlugFromPath: typeof getCollectionSlugFromPath === "function" ? getCollectionSlugFromPath : undefined,
   getCurrentIndex: () => currentIndex,
   getOrPromptUser,
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
@@ -132,7 +153,16 @@ globalThis.readerTestApi = {
     callbacks.forEach((callback) => callback());
     return callbacks.length;
   };
-  return { context, documentState, elements, flushTimers, localStorage };
+  const firePopstate = async () => windowListeners.get("popstate")?.();
+  return {
+    context,
+    documentState,
+    elements,
+    firePopstate,
+    flushTimers,
+    historyCalls,
+    localStorage,
+  };
 }
 
 function response(body) {
@@ -239,6 +269,36 @@ function createCollectionFetch({ problems = {} } = {}) {
   };
 }
 
+test("a collection URL selects its catalog entry on startup", async () => {
+  const fetchImpl = createFetch();
+  const { context, elements } = loadApp({
+    fetchImpl,
+    pathname: "/collections/test-collection",
+    promptResult: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCollectionSlugFromPath(), "test-collection");
+  assert.equal(elements.get("#collection-title").textContent, "Test collection");
+});
+
+test("an unknown collection URL reports an error without loading the first catalog entry", async () => {
+  const { fetchImpl, calls } = createCollectionFetch();
+  const { context, elements } = loadApp({
+    fetchImpl,
+    pathname: "/collections/missing",
+    promptResult: "Ada",
+    savedCollection: "basic",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(calls, ["/api/collections"]);
+  assert.equal(elements.get("#collection-title").textContent, "");
+  assert.match(elements.get("#status-feedback").textContent, /unknown collection/i);
+});
+
 test("a valid saved collection is loaded after the catalog and starts at its first revisit", async () => {
   const { fetchImpl, calls } = createCollectionFetch({
     problems: {
@@ -288,7 +348,7 @@ test("an invalid saved collection falls back to the first API-sorted catalog ent
   assert.ok(catalog.every((item) => !("problems" in item) && !("moves" in item)));
 });
 
-test("selecting a collection persists it, closes the panel, and scopes progress to its namespace", async () => {
+test("selecting a collection persists it, pushes a shareable URL, closes the panel, and scopes progress to its namespace", async () => {
   const { fetchImpl } = createCollectionFetch({
     problems: {
       "basic:1@1": { status: "solved" },
@@ -296,7 +356,7 @@ test("selecting a collection persists it, closes the panel, and scopes progress 
       "advanced:2@1": { status: "revisit" },
     },
   });
-  const { context, elements, localStorage } = loadApp({
+  const { context, elements, historyCalls, localStorage } = loadApp({
     fetchImpl,
     promptResult: "Ada",
     savedCollection: "basic",
@@ -307,10 +367,28 @@ test("selecting a collection persists it, closes the panel, and scopes progress 
   await context.readerTestApi.selectCollection("advanced");
 
   assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
+  assert.deepEqual(historyCalls, ["/collections/advanced"]);
   assert.equal(elements.get("#collection-panel").hidden, true);
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
   assert.equal(elements.get("#progress-summary").textContent, "Solved: 1 · Revisit: 1 · Total: 3");
   assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
+
+test("popstate loads the current collection URL without adding a history entry", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements, firePopstate, historyCalls } = loadApp({
+    fetchImpl,
+    pathname: "/collections/basic",
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+  await context.readerTestApi.selectCollection("advanced");
+
+  context.window.location.pathname = "/collections/basic";
+  await firePopstate();
+
+  assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
+  assert.deepEqual(historyCalls, ["/collections/advanced"]);
 });
 
 test("the collection dialog traps focus, restores its invoker, and blocks reader arrows", async () => {

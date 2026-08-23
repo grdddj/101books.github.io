@@ -73,6 +73,20 @@ function getSavedCollection(collectionCatalog) {
     : collectionCatalog[0].slug;
 }
 
+function collectionPath(slug) {
+  return `/collections/${encodeURIComponent(slug)}`;
+}
+
+function getCollectionSlugFromPath() {
+  const match = /^\/collections\/([^/]+)$/.exec(window.location.pathname);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 function getStatusTotals(problems) {
   return problems.reduce(
     (totals, { id }) => {
@@ -408,7 +422,7 @@ function openCollectionPanel(event) {
   focusCollectionPanel();
 }
 
-async function loadActiveCollection(slug) {
+async function loadActiveCollection(slug, historyMode = "none") {
   const nextCollection = await fetchJson(`/api/collections/${encodeURIComponent(slug)}`);
   const nextStatuses = (await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`)).problems;
   collection = nextCollection;
@@ -416,16 +430,19 @@ async function loadActiveCollection(slug) {
   currentIndex = firstPendingIndex(collection.problems, statuses);
   renderCollectionList();
   renderReader();
+  if (historyMode === "push") {
+    window.history.pushState({}, "", collectionPath(slug));
+  }
 }
 
 async function selectCollection(slug) {
   if (isSaving || isLoadingCollection) return;
-  localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
   closeCollectionPanel({ restoreFocus: false });
   isLoadingCollection = true;
   setControlsDisabled(true);
   try {
-    await loadActiveCollection(slug);
+    await loadActiveCollection(slug, "push");
+    localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     statusFeedback.textContent = `Selected ${collection.title}.`;
   } catch (error) {
     showError(error);
@@ -438,13 +455,40 @@ async function selectCollection(slug) {
   }
 }
 
+async function loadCollectionFromHistory() {
+  if (isSaving || isLoadingCollection) return;
+  const slug = window.location.pathname === "/"
+    ? getSavedCollection(catalog)
+    : getCollectionSlugFromPath();
+  if (!slug || !catalog.some((item) => item.slug === slug)) {
+    showError(new Error("Unknown collection in URL."));
+    return;
+  }
+
+  isLoadingCollection = true;
+  setControlsDisabled(true);
+  try {
+    await loadActiveCollection(slug);
+    localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
+  } catch (error) {
+    showError(error);
+  } finally {
+    isLoadingCollection = false;
+    if (hasCollection()) renderReader();
+  }
+}
+
 async function startReader() {
   isLoadingCollection = true;
   try {
     setControlsDisabled(true);
     user = getOrPromptUser();
     catalog = await fetchJson("/api/collections");
-    const slug = getSavedCollection(catalog);
+    const pathSlug = getCollectionSlugFromPath();
+    if (pathSlug && !catalog.some((item) => item.slug === pathSlug)) {
+      throw new Error("Unknown collection in URL.");
+    }
+    const slug = pathSlug || getSavedCollection(catalog);
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     await loadActiveCollection(slug);
     statusFeedback.textContent = `Tracking progress for ${user}.`;
@@ -462,6 +506,7 @@ solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
 changeCollectionButton?.addEventListener("click", openCollectionPanel);
 closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
+window.addEventListener("popstate", loadCollectionFromHistory);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });
 

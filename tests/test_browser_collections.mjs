@@ -52,7 +52,7 @@ function browserPage() {
       window.addEventListener("load", async () => {
         const result = document.querySelector("#browser-collections-result");
         try {
-          await waitFor(() => !document.querySelector("#change-collection").disabled);
+          await waitFor(() => document.querySelector("#collection-title").textContent === "200 Basic Go Problems");
           const changeButton = document.querySelector("#change-collection");
           const reader = document.querySelector("#app");
           const ordinalBeforeQueuedWheel = document.querySelector("#problem-ordinal").textContent;
@@ -91,6 +91,12 @@ function browserPage() {
           changeButton.click();
           options[1].click();
           await waitFor(() => document.querySelector("#collection-title").textContent === "Advanced shapes");
+          const selectedPathname = window.location.pathname;
+          const selectedCollection = localStorage.getItem("static-go-reader-collection");
+          const selectedProgress = document.querySelector("#progress-summary").textContent;
+          const selectionRestoredFocus = document.activeElement === changeButton;
+          history.back();
+          await waitFor(() => document.querySelector("#collection-title").textContent === "200 Basic Go Problems");
           result.textContent = JSON.stringify({
             panelOpened,
             visibleCatalog,
@@ -103,10 +109,12 @@ function browserPage() {
             wheelBlocked,
             escapeRestoredFocus,
             closeRestoredFocus,
-            selectedTitle: document.querySelector("#collection-title").textContent,
-            selectedCollection: localStorage.getItem("static-go-reader-collection"),
-            progress: document.querySelector("#progress-summary").textContent,
-            selectionRestoredFocus: document.activeElement === changeButton,
+            selectedPathname,
+            restoredTitle: document.querySelector("#collection-title").textContent,
+            restoredPathname: window.location.pathname,
+            selectedCollection,
+            progress: selectedProgress,
+            selectionRestoredFocus,
           });
         } catch (error) {
           result.textContent = JSON.stringify({ error: error.message });
@@ -114,20 +122,21 @@ function browserPage() {
       });
     </script>`;
   return indexSource
-    .replace('<script src="app.js" defer></script>', `${seed}<script src="app.js" defer></script>`)
+    .replace('<script src="/app.js" defer></script>', `${seed}<script src="/app.js" defer></script>`)
     .replace("</body>", `${probe}</body>`);
 }
 
 async function startReaderServer(progressPath) {
   const files = {
     "/": [browserPage(), "text/html; charset=utf-8"],
+    "/collections/200-basic-go-problems": [browserPage(), "text/html; charset=utf-8"],
     "/app.js": [appSource, "text/javascript; charset=utf-8"],
     "/app.css": [appCss, "text/css; charset=utf-8"],
   };
   const catalog = [
     {
-      slug: "basic",
-      title: "Basic shapes",
+      slug: "200-basic-go-problems",
+      title: "200 Basic Go Problems",
       category: "tsumego",
       level: "20 kyu",
       problem_count: 2,
@@ -141,12 +150,12 @@ async function startReaderServer(progressPath) {
     },
   ];
   const collections = {
-    basic: {
-      slug: "basic",
-      title: "Basic shapes",
+    "200-basic-go-problems": {
+      slug: "200-basic-go-problems",
+      title: "200 Basic Go Problems",
       problems: [
-        { id: "basic:1@1", number: 1, black: ["aa"], white: [] },
-        { id: "basic:2@1", number: 2, black: ["bb"], white: [] },
+        { id: "200-basic-go-problems:1@1", number: 1, black: ["aa"], white: [] },
+        { id: "200-basic-go-problems:2@1", number: 2, black: ["bb"], white: [] },
       ],
     },
     advanced: {
@@ -183,17 +192,17 @@ async function startReaderServer(progressPath) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
-  return { server, url: `http://127.0.0.1:${port}/` };
+  return { server, url: `http://127.0.0.1:${port}/collections/200-basic-go-problems` };
 }
 
-test("Chromium changes collections with catalog order and collection-scoped progress", { skip: !chromium }, async () => {
+test("Chromium loads a collection URL and restores it with browser Back", { skip: !chromium }, async () => {
   const directory = await mkdtemp(join(process.cwd(), ".go-reader-collections-"));
   const progressPath = join(directory, "progress.json");
   await writeFile(
     progressPath,
     JSON.stringify({
       problems: {
-        "basic:2@1": { status: "solved" },
+        "200-basic-go-problems:2@1": { status: "solved" },
         "advanced:1@1": { status: "solved" },
         "advanced:2@1": { status: "revisit" },
       },
@@ -214,7 +223,7 @@ test("Chromium changes collections with catalog order and collection-scoped prog
     assert.deepEqual(JSON.parse(match[1]), {
       panelOpened: true,
       visibleCatalog: [
-        "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 1 · Revisit: 0",
+        "200 Basic Go Problems · 20 kyu · tsumego · 2 problems · Solved: 1 · Revisit: 0",
         "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 · Revisit: 1",
       ],
       queuedWheelBlocked: true,
@@ -226,7 +235,9 @@ test("Chromium changes collections with catalog order and collection-scoped prog
       wheelBlocked: true,
       escapeRestoredFocus: true,
       closeRestoredFocus: true,
-      selectedTitle: "Advanced shapes",
+      selectedPathname: "/collections/advanced",
+      restoredTitle: "200 Basic Go Problems",
+      restoredPathname: "/collections/200-basic-go-problems",
       selectedCollection: "advanced",
       progress: "Solved: 1 · Revisit: 1 · Total: 3",
       selectionRestoredFocus: true,

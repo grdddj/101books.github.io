@@ -1,8 +1,10 @@
+import json
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reader.server import load_collection, parse_initial_stones
+from reader.server import ProgressStore, load_collection, parse_initial_stones
 
 
 class CollectionTests(unittest.TestCase):
@@ -63,3 +65,65 @@ class CollectionTests(unittest.TestCase):
 
         self.assertEqual(black, ["aa"])
         self.assertEqual(white, [])
+
+
+class ProgressStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+
+    def test_progress_store_persists_a_solved_status(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        store = ProgressStore(path, {"24176/174139"})
+
+        result = store.set_status("Ada", "24176/174139", "solved")
+
+        self.assertEqual(result["24176/174139"]["status"], "solved")
+        saved = json.loads(path.read_text())
+        self.assertEqual(
+            saved["users"]["Ada"]["problems"]["24176/174139"]["status"],
+            "solved",
+        )
+
+    def test_progress_store_rejects_invalid_status_and_unknown_problem(self) -> None:
+        store = ProgressStore(self.root / "progress.json", {"24176/174139"})
+
+        with self.assertRaisesRegex(ValueError, "Invalid status"):
+            store.set_status("Ada", "24176/174139", "wrong")
+        with self.assertRaisesRegex(ValueError, "Unknown problem"):
+            store.set_status("Ada", "missing", "solved")
+
+    def test_progress_store_validates_user_names(self) -> None:
+        store = ProgressStore(self.root / "progress.json", {"24176/174139"})
+
+        for user in ("", "  Ada  ", "x" * 81):
+            with self.subTest(user=user):
+                if user == "  Ada  ":
+                    store.set_status(user, "24176/174139", "solved")
+                else:
+                    with self.assertRaisesRegex(ValueError, "Invalid user"):
+                        store.set_status(user, "24176/174139", "solved")
+
+    def test_progress_store_removes_unseen_status_and_reads_saved_data(self) -> None:
+        path = self.root / "progress.json"
+        store = ProgressStore(path, {"24176/174139"})
+        store.set_status("Ada", "24176/174139", "solved")
+
+        result = store.set_status("Ada", "24176/174139", "unseen")
+
+        self.assertEqual(result, {})
+        self.assertEqual(store.get_user("Ada"), {})
+        self.assertEqual(json.loads(path.read_text())["users"]["Ada"]["problems"], {})
+
+    def test_progress_store_records_utc_timestamp_and_reloads(self) -> None:
+        path = self.root / "progress.json"
+        store = ProgressStore(path, {"24176/174139"})
+
+        result = store.set_status("Ada", "24176/174139", "revisit")
+        timestamp = result["24176/174139"]["updated_at"]
+
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        self.assertIsNotNone(parsed.utcoffset())
+        self.assertEqual(parsed.utcoffset().total_seconds(), 0)
+        self.assertEqual(ProgressStore(path, {"24176/174139"}).get_user("Ada"), result)

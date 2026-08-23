@@ -1,4 +1,5 @@
 const board = document.querySelector("#board");
+const reader = document.querySelector("#app");
 const collectionTitle = document.querySelector("#collection-title");
 const progressSummary = document.querySelector("#progress-summary");
 const problemOrdinal = document.querySelector("#problem-ordinal");
@@ -61,23 +62,32 @@ function renderBoard(problem) {
 }
 
 function renderReader() {
-  const problem = collection.problems[currentIndex];
-  const currentStatus = statuses[problem.id]?.status || "unseen";
-  const solvedCount = Object.values(statuses).filter(
-    ({ status }) => status === "solved",
-  ).length;
-  const revisitCount = Object.values(statuses).filter(
-    ({ status }) => status === "revisit",
-  ).length;
+  try {
+    const problem = collection.problems[currentIndex];
+    const currentStatus = statuses[problem.id]?.status || "unseen";
+    const solvedCount = Object.values(statuses).filter(
+      ({ status }) => status === "solved",
+    ).length;
+    const revisitCount = Object.values(statuses).filter(
+      ({ status }) => status === "revisit",
+    ).length;
 
-  collectionTitle.textContent = collection.title;
-  problemOrdinal.textContent = `Problem ${problem.number} of ${collection.problems.length}`;
-  progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
-  previousButton.disabled = currentIndex === 0;
-  nextButton.disabled = currentIndex === collection.problems.length - 1;
-  setSelectedStatus(solvedButton, currentStatus === "solved");
-  setSelectedStatus(revisitButton, currentStatus === "revisit");
-  renderBoard(problem);
+    collectionTitle.textContent = collection.title;
+    problemOrdinal.textContent = `Problem ${problem.number} of ${collection.problems.length}`;
+    progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
+    previousButton.disabled = currentIndex === 0;
+    nextButton.disabled = collection.problems.length === currentIndex + 1;
+    solvedButton.disabled = false;
+    revisitButton.disabled = false;
+    setSelectedStatus(solvedButton, currentStatus === "solved");
+    setSelectedStatus(revisitButton, currentStatus === "revisit");
+    renderBoard(problem);
+    return true;
+  } catch (error) {
+    setControlsDisabled(true);
+    showError(error);
+    return false;
+  }
 }
 
 function setSelectedStatus(button, selected) {
@@ -86,6 +96,11 @@ function setSelectedStatus(button, selected) {
 }
 
 async function setCurrentStatus(status) {
+  if (!hasCollection()) {
+    showError(new Error("Reader is still loading."));
+    return;
+  }
+
   try {
     const problem = collection.problems[currentIndex];
     const savedProgress = await fetchJson("/api/progress", {
@@ -94,14 +109,16 @@ async function setCurrentStatus(status) {
       body: JSON.stringify({ user, problem_id: problem.id, status }),
     });
     statuses = savedProgress.problems;
-    renderReader();
-    statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
+    if (renderReader()) {
+      statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
+    }
   } catch (error) {
     statusFeedback.textContent = error.message;
   }
 }
 
 function navigate(delta) {
+  if (!hasCollection()) return;
   currentIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),
@@ -110,6 +127,17 @@ function navigate(delta) {
 }
 
 function handleWheel(event) {
+  if (
+    event.defaultPrevented ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    !isReaderTarget(event.target) ||
+    !hasCollection()
+  ) {
+    return;
+  }
   wheelDelta += event.deltaY;
   window.clearTimeout(wheelTimer);
   wheelTimer = window.setTimeout(() => {
@@ -124,17 +152,64 @@ function handleWheel(event) {
   }, WHEEL_IDLE_MS);
 }
 
+function handleKeydown(event) {
+  if (
+    event.defaultPrevented ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    !hasCollection()
+  ) {
+    return;
+  }
+
+  const delta = ["ArrowLeft", "ArrowUp"].includes(event.key)
+    ? -1
+    : ["ArrowRight", "ArrowDown"].includes(event.key)
+      ? 1
+      : 0;
+  if (!delta) return;
+  event.preventDefault();
+  navigate(delta);
+}
+
+function hasCollection() {
+  return Array.isArray(collection?.problems) && collection.problems.length > 0;
+}
+
+function isReaderTarget(target) {
+  return target === reader || reader.contains(target);
+}
+
+function setControlsDisabled(disabled) {
+  for (const button of [
+    previousButton,
+    solvedButton,
+    revisitButton,
+    nextButton,
+  ]) {
+    button.disabled = disabled;
+  }
+}
+
+function showError(error) {
+  statusFeedback.textContent = error instanceof Error ? error.message : String(error);
+}
+
 async function startReader() {
   try {
+    setControlsDisabled(true);
     user = getOrPromptUser();
     collection = await fetchJson("/api/collection");
     const progress = await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`);
     statuses = progress.problems;
     currentIndex = firstPendingIndex(collection.problems, statuses);
-    renderReader();
-    statusFeedback.textContent = `Tracking progress for ${user}.`;
+    if (renderReader()) {
+      statusFeedback.textContent = `Tracking progress for ${user}.`;
+    }
   } catch (error) {
-    statusFeedback.textContent = error.message;
+    showError(error);
   }
 }
 
@@ -142,10 +217,7 @@ previousButton.addEventListener("click", () => navigate(-1));
 nextButton.addEventListener("click", () => navigate(1));
 solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
-document.addEventListener("keydown", (event) => {
-  if (["ArrowLeft", "ArrowUp"].includes(event.key)) navigate(-1);
-  if (["ArrowRight", "ArrowDown"].includes(event.key)) navigate(1);
-});
+document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });
 
 startReader();

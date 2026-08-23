@@ -398,6 +398,7 @@ test("the collection list shows progress states and solved percentages", async (
     problems: {
       "advanced:1@1": { status: "revisit" },
       "partial:1@1": { status: "solved" },
+      "thirds:1@1": { status: "solved" },
       "complete:1@1": { status: "solved" },
       "complete:2@1": { status: "solved" },
     },
@@ -409,6 +410,13 @@ test("the collection list shows progress states and solved percentages", async (
       category: "tesuji",
       level: "10 kyu",
       problem_count: 4,
+    },
+    {
+      slug: "thirds",
+      title: "Thirds shapes",
+      category: "joseki",
+      level: "8 kyu",
+      problem_count: 3,
     },
     {
       slug: "complete",
@@ -432,15 +440,18 @@ test("the collection list shows progress states and solved percentages", async (
   assert.equal(options[0].className, "collection-option");
   assert.equal(options[1].className, "collection-option collection-option--started");
   assert.equal(options[2].className, "collection-option collection-option--partial");
-  assert.equal(options[3].className, "collection-option collection-option--complete");
+  assert.equal(options[3].className, "collection-option collection-option--partial");
+  assert.equal(options[4].className, "collection-option collection-option--complete");
   assert.equal(options[0].style["--collection-progress"], "0%");
   assert.equal(options[1].style["--collection-progress"], "0%");
   assert.equal(options[2].style["--collection-progress"], "25%");
-  assert.equal(options[3].style["--collection-progress"], "100%");
+  assert.equal(options[3].style["--collection-progress"], "33.33333333333333%");
+  assert.equal(options[4].style["--collection-progress"], "100%");
   assert.match(options[0].appended[0].textContent, /Solved: 0 \(0%\)/);
   assert.match(options[1].appended[0].textContent, /Solved: 0 \(0%\)/);
   assert.match(options[2].appended[0].textContent, /Solved: 1 \(25%\)/);
-  assert.match(options[3].appended[0].textContent, /Solved: 2 \(100%\)/);
+  assert.match(options[3].appended[0].textContent, /Solved: 1 \(33%\)/);
+  assert.match(options[4].appended[0].textContent, /Solved: 2 \(100%\)/);
   assert.match(appCss, /var\(--collection-progress\)/);
   for (const state of ["started", "partial", "complete"]) {
     assert.match(appCss, new RegExp(`\\.collection-option--${state}`));

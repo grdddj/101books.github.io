@@ -125,6 +125,7 @@ function renderCollectionList() {
   collectionButtons = catalog.map((item) => {
     const totals = getCatalogStatusTotals(item.slug);
     const solvedPercentage = (totals.solved / item.problem_count) * 100;
+    const solvedPercentageLabel = Math.round(solvedPercentage);
     const stateClass =
       totals.solved === item.problem_count
         ? "collection-option--complete"
@@ -139,7 +140,7 @@ function renderCollectionList() {
     option.style.setProperty("--collection-progress", `${solvedPercentage}%`);
     const label = document.createElement("span");
     label.className = "collection-option__label";
-    label.textContent = `${item.title} · ${item.level} · ${item.category} · ${item.problem_count} problems · Solved: ${totals.solved} (${solvedPercentage}%) · Revisit: ${totals.revisit}`;
+    label.textContent = `${item.title} · ${item.level} · ${item.category} · ${item.problem_count} problems · Solved: ${totals.solved} (${solvedPercentageLabel}%) · Revisit: ${totals.revisit}`;
     option.append(label);
     option.setAttribute("data-collection-slug", item.slug);
     option.addEventListener("click", () => selectCollection(item.slug));

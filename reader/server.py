@@ -16,7 +16,6 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
 
     def read_value(start: int) -> tuple[str, int]:
         value: list[str] = []
-        depth = 1
         index = start + 1
         while index < len(source):
             character = source[index]
@@ -24,12 +23,8 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
                 value.extend((character, source[index + 1]))
                 index += 2
                 continue
-            if character == "[":
-                depth += 1
-            elif character == "]":
-                depth -= 1
-                if depth == 0:
-                    return "".join(value), index + 1
+            if character == "]":
+                return "".join(value), index + 1
             value.append(character)
             index += 1
         raise ValueError("Unterminated SGF property value")

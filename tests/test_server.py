@@ -45,7 +45,7 @@ class CollectionTests(unittest.TestCase):
     def test_parse_initial_stones_ignores_comment_text_and_reads_multiple_values(
         self,
     ) -> None:
-        source = r"(;C[hint: AB[tt] AW[uu] and escaped \[brackets\]]AB[aa][bb]AW[cc][dd])"
+        source = r"(;C[hint: AB\[tt\] AW\[uu\] and escaped \[brackets\]]AB[aa][bb]AW[cc][dd])"
 
         black, white = parse_initial_stones(source)
 
@@ -55,3 +55,11 @@ class CollectionTests(unittest.TestCase):
     def test_parse_initial_stones_rejects_invalid_setup_coordinate(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid SGF coordinate: tt"):
             parse_initial_stones("(;AB[tt])")
+
+    def test_parse_initial_stones_treats_unescaped_open_bracket_as_comment_text(
+        self,
+    ) -> None:
+        black, white = parse_initial_stones("(;C[hint: [ordinary text]AB[aa])")
+
+        self.assertEqual(black, ["aa"])
+        self.assertEqual(white, [])

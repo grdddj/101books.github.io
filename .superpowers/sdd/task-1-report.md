@@ -92,3 +92,31 @@ uvx ruff check reader/server.py tests/test_server.py
 ```
 
 Results: all 4 focused tests passed and Ruff reported `All checks passed!`.
+
+## Second review fix
+
+The scanner was treating an unescaped `[` inside a property value as a nested
+delimiter. A regression test now covers ordinary unescaped `[` comment text
+followed by a real `AB[aa]` property.
+
+### Fix RED evidence
+
+Command:
+
+```text
+uv run python -m unittest tests.test_server.CollectionTests.test_parse_initial_stones_treats_unescaped_open_bracket_as_comment_text -v
+```
+
+Result: expected failure with `ValueError: Unterminated SGF property value`.
+
+### Fix GREEN evidence
+
+The value scanner now ends at the first unescaped `]`; `[` is treated as
+ordinary value text, while backslash escapes remain supported. Commands:
+
+```text
+uv run python -m unittest tests.test_server.CollectionTests -v
+uvx ruff check reader/server.py tests/test_server.py
+```
+
+Results: all 5 focused tests passed and Ruff reported `All checks passed!`.

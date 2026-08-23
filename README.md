@@ -21,4 +21,4 @@ display name once per browser. Progress is stored locally in
 Several unauthenticated browser-local profiles can use the same local process,
 but the progress model is not a shared or network service.
 
-The reader intentionally does not allow stone placement or reveal solutions.
+The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem.

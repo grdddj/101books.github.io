@@ -56,20 +56,50 @@ function firstPendingIndex(problems, statuses) {
   return index === -1 ? 0 : index;
 }
 
+function getCoordinatePosition(coordinate) {
+  return {
+    column: coordinate.charCodeAt(0) - 97,
+    row: coordinate.charCodeAt(1) - 97,
+  };
+}
+
+function getBoardCrop(problem) {
+  const stones = [...problem.black, ...problem.white];
+  const columns = stones.map((coordinate) => getCoordinatePosition(coordinate).column);
+  const rows = stones.map((coordinate) => getCoordinatePosition(coordinate).row);
+  const minColumn = Math.max(0, Math.min(...columns) - 1);
+  const maxColumn = Math.min(18, Math.max(...columns) + 1);
+  const minRow = Math.max(0, Math.min(...rows) - 1);
+  const maxRow = Math.min(18, Math.max(...rows) + 1);
+  return {
+    minColumn,
+    maxColumn,
+    minRow,
+    maxRow,
+    columns: maxColumn - minColumn + 1,
+    rows: maxRow - minRow + 1,
+  };
+}
+
 function renderBoard(problem) {
+  const crop = getBoardCrop(problem);
   board.replaceChildren();
+  board.style.setProperty("--board-columns", crop.columns);
+  board.style.setProperty("--board-rows", crop.rows);
   for (const [color, coordinates] of [
     ["black", problem.black],
     ["white", problem.white],
   ]) {
     for (const coordinate of coordinates) {
+      const position = getCoordinatePosition(coordinate);
       const stone = document.createElement("span");
       stone.className = `stone ${color}`;
-      stone.style.gridColumn = coordinate.charCodeAt(0) - 96;
-      stone.style.gridRow = coordinate.charCodeAt(1) - 96;
+      stone.style.gridColumn = position.column - crop.minColumn + 1;
+      stone.style.gridRow = position.row - crop.minRow + 1;
       board.append(stone);
     }
   }
+  return crop;
 }
 
 function renderReader() {
@@ -121,6 +151,7 @@ async function setCurrentStatus(status) {
     });
     statuses = savedProgress.problems;
     if (renderReader()) {
+      if (currentIndex < collection.problems.length - 1) navigate(1);
       statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
     }
   } catch (error) {

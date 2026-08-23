@@ -14,6 +14,7 @@ from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
+BASE_PATH_PATTERN = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
 
 
 @dataclass(frozen=True)
@@ -367,27 +368,90 @@ def _level_rank(level: str) -> int:
     return 20 - value if match.group(2) == "kyu" else 20 + value
 
 
+def normalize_base_path(base_path: str) -> str:
+    normalized = base_path.strip()
+    if normalized in {"", "/"}:
+        return ""
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    normalized = normalized.rstrip("/")
+    if not BASE_PATH_PATTERN.fullmatch(normalized):
+        raise ValueError("Base path must contain only safe URL path segments")
+    if any(segment in {".", ".."} for segment in normalized.split("/")):
+        raise ValueError("Base path cannot contain dot segments")
+    return normalized
+
+
 class ReaderRequestHandler(SimpleHTTPRequestHandler):
     collections: list[Collection]
     progress_store: ProgressStore
+    base_path: str
+    static_directory: Path
+    send_response_body = True
 
     def do_GET(self) -> None:
+        self._handle_read()
+
+    def do_HEAD(self) -> None:
+        self.send_response_body = False
+        self._handle_read()
+
+    def _handle_read(self) -> None:
         request = urlsplit(self.path)
-        if request.path == "/api/collections":
-            self._send_json(HTTPStatus.OK, self._catalog())
-            return
-        if request.path.startswith("/api/collections/"):
-            self._get_collection(request.path.removeprefix("/api/collections/"))
-            return
-        if request.path == "/api/progress":
-            self._get_progress(parse_qs(request.query))
-            return
-        if request.path.startswith("/api/"):
+        path = self._strip_base_path(request.path)
+        if path is None:
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
             return
-        if re.fullmatch(r"/collections/(?:[^/]+)?", unquote(request.path)):
-            self.path = "/"
-        super().do_GET()
+        if path == "/healthz":
+            self._send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+        if path == "/api/collections":
+            self._send_json(HTTPStatus.OK, self._catalog())
+            return
+        if path.startswith("/api/collections/"):
+            self._get_collection(path.removeprefix("/api/collections/"))
+            return
+        if path == "/api/progress":
+            self._get_progress(parse_qs(request.query))
+            return
+        if path.startswith("/api/"):
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
+            return
+        if (
+            path == "/"
+            or path == "/index.html"
+            or re.fullmatch(r"/collections/(?:[^/]+)?", unquote(path))
+        ):
+            self._send_reader_shell()
+            return
+        self.path = path
+        if self.send_response_body:
+            super().do_GET()
+        else:
+            super().do_HEAD()
+
+    def _strip_base_path(self, path: str) -> str | None:
+        if not self.base_path:
+            return path
+        if path == self.base_path:
+            return "/"
+        if not path.startswith(f"{self.base_path}/"):
+            return None
+        return path.removeprefix(self.base_path)
+
+    def _send_reader_shell(self) -> None:
+        try:
+            source = (self.static_directory / "index.html").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Reader shell is unavailable")
+            return
+        encoded_body = source.replace("__READER_BASE_PATH__", self.base_path).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded_body)))
+        self.end_headers()
+        if self.send_response_body:
+            self.wfile.write(encoded_body)
 
     def _catalog(self) -> list[dict[str, str | int]]:
         return [
@@ -428,7 +492,8 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         )
 
     def do_PUT(self) -> None:
-        if urlsplit(self.path).path != "/api/progress":
+        request_path = urlsplit(self.path).path
+        if self._strip_base_path(request_path) != "/api/progress":
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
             return
 
@@ -495,7 +560,8 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded_body)))
         self.end_headers()
-        self.wfile.write(encoded_body)
+        if self.send_response_body:
+            self.wfile.write(encoded_body)
 
 
 def create_server(
@@ -503,7 +569,9 @@ def create_server(
     progress_path: Path,
     host: str = "127.0.0.1",
     port: int = 0,
+    base_path: str = "",
 ) -> ThreadingHTTPServer:
+    normalized_base_path = normalize_base_path(base_path)
     collections = load_collections(repository_root)
     progress_store = ProgressStore(
         progress_path,
@@ -517,6 +585,8 @@ def create_server(
 
     ConfiguredReaderRequestHandler.collections = collections
     ConfiguredReaderRequestHandler.progress_store = progress_store
+    ConfiguredReaderRequestHandler.base_path = normalized_base_path
+    ConfiguredReaderRequestHandler.static_directory = static_directory
     return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)
 
 
@@ -524,12 +594,29 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--progress-file", type=Path)
+    storage_arguments = parser.add_mutually_exclusive_group()
+    storage_arguments.add_argument("--progress-file", type=Path)
+    storage_arguments.add_argument("--data-dir", type=Path)
+    parser.add_argument("--base-path", default="")
     arguments = parser.parse_args()
 
     repository_root = Path(__file__).resolve().parents[1]
-    progress_path = arguments.progress_file or repository_root / "reader-data/progress.json"
-    server = create_server(repository_root, progress_path, arguments.host, arguments.port)
+    progress_path = (
+        arguments.progress_file
+        or (arguments.data_dir / "progress.json" if arguments.data_dir else None)
+        or repository_root / "reader-data/progress.json"
+    )
+    try:
+        base_path = normalize_base_path(arguments.base_path)
+    except ValueError as error:
+        parser.error(str(error))
+    server = create_server(
+        repository_root,
+        progress_path,
+        arguments.host,
+        arguments.port,
+        base_path,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

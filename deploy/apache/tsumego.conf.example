@@ -1,0 +1,7 @@
+# Enable proxy modules before using this virtual-host fragment:
+#   sudo a2enmod proxy proxy_http
+
+RedirectMatch 308 ^/tsumego$ /tsumego/
+
+ProxyPass        /tsumego/ http://127.0.0.1:8123/tsumego/
+ProxyPassReverse /tsumego/ http://127.0.0.1:8123/tsumego/

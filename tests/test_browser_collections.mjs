@@ -36,7 +36,7 @@ function response(reply, statusCode, body, contentType = "application/json; char
   reply.end(body);
 }
 
-function browserPage() {
+function browserPage(basePath = "") {
   const seed = '<script>localStorage.setItem("static-go-reader-user", "Ada");</script>';
   const probe = `
     <pre id="browser-collections-result"></pre>
@@ -122,7 +122,11 @@ function browserPage() {
       });
     </script>`;
   return indexSource
-    .replace('<script src="/app.js" defer></script>', `${seed}<script src="/app.js" defer></script>`)
+    .replaceAll("__READER_BASE_PATH__", basePath)
+    .replace(
+      `<script>window.READER_BASE_PATH = "${basePath}";</script>`,
+      `${seed}<script>window.READER_BASE_PATH = "${basePath}";</script>`,
+    )
     .replace("</body>", `${probe}</body>`);
 }
 
@@ -168,17 +172,25 @@ function invalidCollectionBrowserPage() {
       });
     </script>`;
   return indexSource
-    .replace('<script src="/app.js" defer></script>', `${seed}<script src="/app.js" defer></script>`)
+    .replaceAll("__READER_BASE_PATH__", "")
+    .replace(
+      '<script>window.READER_BASE_PATH = "";</script>',
+      `${seed}<script>window.READER_BASE_PATH = "";</script>`,
+    )
     .replace("</body>", `${probe}</body>`);
 }
 
-async function startReaderServer(progressPath) {
+async function startReaderServer(progressPath, basePath = "") {
+  const path = (suffix) => `${basePath}${suffix}`;
   const files = {
-    "/": [browserPage(), "text/html; charset=utf-8"],
-    "/collections/": [invalidCollectionBrowserPage(), "text/html; charset=utf-8"],
-    "/collections/200-basic-go-problems": [browserPage(), "text/html; charset=utf-8"],
-    "/app.js": [appSource, "text/javascript; charset=utf-8"],
-    "/app.css": [appCss, "text/css; charset=utf-8"],
+    [path("/")]: [browserPage(basePath), "text/html; charset=utf-8"],
+    [path("/collections/")]: [invalidCollectionBrowserPage(), "text/html; charset=utf-8"],
+    [path("/collections/200-basic-go-problems")]: [
+      browserPage(basePath),
+      "text/html; charset=utf-8",
+    ],
+    [path("/app.js")]: [appSource, "text/javascript; charset=utf-8"],
+    [path("/app.css")]: [appCss, "text/css; charset=utf-8"],
   };
   const catalog = [
     {
@@ -222,16 +234,16 @@ async function startReaderServer(progressPath) {
       response(reply, 200, body, contentType);
       return;
     }
-    if (pathname === "/api/collections") {
+    if (pathname === path("/api/collections")) {
       response(reply, 200, JSON.stringify(catalog));
       return;
     }
-    if (pathname.startsWith("/api/collections/")) {
-      const collection = collections[decodeURIComponent(pathname.slice("/api/collections/".length))];
+    if (pathname.startsWith(path("/api/collections/"))) {
+      const collection = collections[decodeURIComponent(pathname.slice(path("/api/collections/").length))];
       response(reply, collection ? 200 : 404, JSON.stringify(collection ?? { error: "Unknown collection" }));
       return;
     }
-    if (pathname === "/api/progress") {
+    if (pathname === path("/api/progress")) {
       response(reply, 200, await readFile(progressPath, "utf8"));
       return;
     }
@@ -241,8 +253,8 @@ async function startReaderServer(progressPath) {
   const { port } = server.address();
   return {
     server,
-    url: `http://127.0.0.1:${port}/collections/200-basic-go-problems`,
-    invalidUrl: `http://127.0.0.1:${port}/collections/`,
+    url: `http://127.0.0.1:${port}${path("/collections/200-basic-go-problems")}`,
+    invalidUrl: `http://127.0.0.1:${port}${path("/collections/")}`,
   };
 }
 
@@ -293,6 +305,34 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
       progress: "Solved: 1 · Revisit: 1 · Total: 3",
       selectionRestoredFocus: true,
     });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("Chromium keeps collection navigation inside a configured base path", { skip: !chromium }, async () => {
+  const directory = await mkdtemp(join(process.cwd(), ".go-reader-base-path-"));
+  const progressPath = join(directory, "progress.json");
+  await writeFile(progressPath, JSON.stringify({ problems: {} }));
+  const { server, url } = await startReaderServer(progressPath, "/tsumego");
+  try {
+    const { stdout } = await execFileAsync(chromium, [
+      "--headless=new",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--dump-dom",
+      "--virtual-time-budget=4000",
+      url,
+    ]);
+    const match = stdout.match(/<pre id="browser-collections-result">([^<]*)<\/pre>/);
+    assert.ok(match, "Chromium did not return the base-path test result");
+    const result = JSON.parse(match[1]);
+    assert.equal(result.selectedPathname, "/tsumego/collections/advanced");
+    assert.equal(
+      result.restoredPathname,
+      "/tsumego/collections/200-basic-go-problems",
+    );
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     await rm(directory, { force: true, recursive: true });

@@ -14,6 +14,7 @@ from reader.server import (
     collection_problem_id,
     create_server,
     load_collections,
+    normalize_base_path,
     parse_initial_stones,
     source_collection_slug,
 )
@@ -165,6 +166,18 @@ class CollectionTests(unittest.TestCase):
     def test_parse_initial_stones_rejects_missing_closing_game_tree(self) -> None:
         with self.assertRaisesRegex(ValueError, "Missing SGF closing game tree"):
             parse_initial_stones("(;AB[aa]")
+
+
+class BasePathTests(unittest.TestCase):
+    def test_base_path_normalizes_leading_and_trailing_slashes(self) -> None:
+        self.assertEqual(normalize_base_path("tsumego/"), "/tsumego")
+        self.assertEqual(normalize_base_path("/tsumego/"), "/tsumego")
+        self.assertEqual(normalize_base_path("/"), "")
+
+    def test_base_path_rejects_unsafe_segments(self) -> None:
+        for base_path in ("/tsumego//reader", "/tsumego/../reader", "/tsumego?<script>"):
+            with self.subTest(base_path=base_path), self.assertRaises(ValueError):
+                normalize_base_path(base_path)
 
 
 class ProgressStoreTests(unittest.TestCase):
@@ -424,15 +437,22 @@ class ProgressStoreTests(unittest.TestCase):
 
 
 class HttpApiTests(unittest.TestCase):
+    base_path = ""
+
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
         self._make_fixture_collection()
-        self.server = create_server(self.root, self.root / "reader-data/progress.json")
+        self.server = create_server(
+            self.root,
+            self.root / "reader-data/progress.json",
+            base_path=self.base_path,
+        )
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.start()
-        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.base_url = f"{self.origin}{self.base_path}"
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -449,6 +469,11 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(catalog_entry["problem_count"], 1)
         self.assertNotIn("problems", catalog_entry)
 
+    def test_health_endpoint_reports_service_status(self) -> None:
+        response = self.get_json("/healthz")
+
+        self.assertEqual(response, {"status": "ok"})
+
     def test_collection_reader_path_serves_reader_shell(self) -> None:
         for path in ["/collections/200-basic-go-problems", "/collections/"]:
             with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
@@ -456,6 +481,20 @@ class HttpApiTests(unittest.TestCase):
 
                 self.assertEqual(response.status, 200)
                 self.assertIn('id="collection-list"', body)
+
+    def test_static_assets_are_served_with_the_configured_route_prefix(self) -> None:
+        for path in ["/app.css", "/app.js"]:
+            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+                self.assertEqual(response.status, 200)
+
+    def test_head_matches_get_routes_without_sending_a_body(self) -> None:
+        for path in ["/", "/app.js", "/api/collections", "/healthz"]:
+            with self.subTest(path=path):
+                request = Request(f"{self.base_url}{path}", method="HEAD")
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertGreater(int(response.headers["Content-Length"]), 0)
+                    self.assertEqual(response.read(), b"")
 
     def test_api_catalog_stays_json_and_nested_collection_path_is_not_reader_route(self) -> None:
         status, response = self.request_json("/api/collections")
@@ -672,7 +711,13 @@ class HttpApiTests(unittest.TestCase):
             return error.code, json.loads(error.read())
 
     def raw_put_progress(self, headers: list[str]) -> tuple[int, dict[str, object]]:
-        request_lines = ["PUT /api/progress HTTP/1.1", "Host: 127.0.0.1", *headers, "", ""]
+        request_lines = [
+            f"PUT {self.base_path}/api/progress HTTP/1.1",
+            "Host: 127.0.0.1",
+            *headers,
+            "",
+            "",
+        ]
         with socket.create_connection(
             ("127.0.0.1", self.server.server_address[1]), timeout=1
         ) as client:
@@ -685,3 +730,28 @@ class HttpApiTests(unittest.TestCase):
         header, body = bytes(response).split(b"\r\n\r\n", maxsplit=1)
         status = int(header.splitlines()[0].split()[1])
         return status, json.loads(body)
+
+
+class BasePathHttpApiTests(HttpApiTests):
+    base_path = "/tsumego"
+
+    def test_reader_shell_injects_prefixed_asset_and_client_paths(self) -> None:
+        with urlopen(f"{self.base_url}/") as response:
+            body = response.read().decode("utf-8")
+
+        self.assertIn('href="/tsumego/app.css"', body)
+        self.assertIn('src="/tsumego/app.js"', body)
+        self.assertIn('window.READER_BASE_PATH = "/tsumego"', body)
+
+    def test_unprefixed_routes_are_not_exposed_in_base_path_mode(self) -> None:
+        for path in ["/", "/app.js", "/api/collections", "/healthz"]:
+            with self.subTest(path=path), self.assertRaises(HTTPError) as error:
+                urlopen(f"{self.origin}{path}")
+
+            self.assertEqual(error.exception.code, 404)
+
+        request = Request(f"{self.origin}/app.js", method="HEAD")
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+
+        self.assertEqual(error.exception.code, 404)

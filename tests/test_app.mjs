@@ -38,6 +38,7 @@ function createElement(documentState) {
 }
 
 function loadApp({
+  basePath = "",
   fetchImpl,
   promptResult,
   savedName = null,
@@ -65,6 +66,7 @@ function loadApp({
   );
   const location = { pathname };
   const window = {
+    READER_BASE_PATH: basePath,
     addEventListener(event, listener) {
       windowListeners.set(event, listener);
     },
@@ -288,6 +290,71 @@ test("a collection URL selects its catalog entry on startup", async () => {
 
   assert.equal(context.readerTestApi.getCollectionSlugFromPath(), "test-collection");
   assert.equal(elements.get("#collection-title").textContent, "Test collection");
+});
+
+test("a configured base path prefixes API calls and collection history", async () => {
+  const calls = [];
+  const fetchImpl = async (path, options = {}) => {
+    calls.push([path, options.method ?? "GET"]);
+    if (path === "/tsumego/api/collections") {
+      return response([
+        {
+          slug: "basic",
+          title: "Basic shapes",
+          category: "tsumego",
+          level: "20 kyu",
+          problem_count: 1,
+        },
+        {
+          slug: "advanced",
+          title: "Advanced shapes",
+          category: "tesuji",
+          level: "1 dan",
+          problem_count: 1,
+        },
+      ]);
+    }
+    if (path === "/tsumego/api/collections/basic") {
+      return response({
+        slug: "basic",
+        title: "Basic shapes",
+        problems: [{ id: "basic:1@1", number: 1, black: ["aa"], white: [] }],
+      });
+    }
+    if (path === "/tsumego/api/collections/advanced") {
+      return response({
+        slug: "advanced",
+        title: "Advanced shapes",
+        problems: [{ id: "advanced:1@1", number: 1, black: ["bb"], white: [] }],
+      });
+    }
+    if (path === "/tsumego/api/progress?user=Ada") return response({ problems: {} });
+    if (path === "/tsumego/api/progress" && options.method === "PUT") {
+      return response({ problems: { "advanced:1@1": { status: "solved" } } });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, historyCalls } = loadApp({
+    basePath: "/tsumego",
+    fetchImpl,
+    pathname: "/tsumego/collections/basic",
+    promptResult: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+  await context.readerTestApi.selectCollection("advanced");
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.deepEqual(calls, [
+    ["/tsumego/api/collections", "GET"],
+    ["/tsumego/api/collections/basic", "GET"],
+    ["/tsumego/api/progress?user=Ada", "GET"],
+    ["/tsumego/api/collections/advanced", "GET"],
+    ["/tsumego/api/progress?user=Ada", "GET"],
+    ["/tsumego/api/progress", "PUT"],
+  ]);
+  assert.deepEqual(historyCalls, ["/tsumego/collections/advanced"]);
+  assert.equal(context.window.location.pathname, "/tsumego/collections/advanced");
 });
 
 test("an unknown collection URL reports an error without loading the first catalog entry", async () => {

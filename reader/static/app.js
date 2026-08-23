@@ -12,6 +12,7 @@ const changeCollectionButton = document.querySelector("#change-collection");
 const collectionPanel = document.querySelector("#collection-panel");
 const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
 const collectionList = document.querySelector("#collection-list");
+const basePath = window.READER_BASE_PATH || "";
 
 let collection;
 let catalog = [];
@@ -38,10 +39,14 @@ const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
 
 async function fetchJson(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await fetch(readerPath(path), options);
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || "Request failed");
   return body;
+}
+
+function readerPath(path) {
+  return `${basePath}${path}`;
 }
 
 function getOrPromptUser() {
@@ -80,12 +85,14 @@ function getSavedCollection(collectionCatalog) {
 }
 
 function collectionPath(slug) {
-  return `/collections/${encodeURIComponent(slug)}`;
+  return readerPath(`/collections/${encodeURIComponent(slug)}`);
 }
 
 function getCollectionPath(pathname = window.location.pathname) {
-  if (pathname === "/") return { kind: "root" };
-  const match = /^\/collections\/([^/]+)$/.exec(pathname);
+  const internalPathname = stripBasePath(pathname);
+  if (internalPathname === null) return { kind: "invalid" };
+  if (internalPathname === "/") return { kind: "root" };
+  const match = /^\/collections\/([^/]+)$/.exec(internalPathname);
   if (!match) return { kind: "invalid" };
   try {
     const slug = decodeURIComponent(match[1]);
@@ -94,6 +101,13 @@ function getCollectionPath(pathname = window.location.pathname) {
   } catch {
     return { kind: "invalid" };
   }
+}
+
+function stripBasePath(pathname) {
+  if (!basePath) return pathname;
+  if (pathname === basePath || pathname === `${basePath}/`) return "/";
+  if (!pathname.startsWith(`${basePath}/`)) return null;
+  return pathname.slice(basePath.length);
 }
 
 function getCollectionSlugFromPath() {

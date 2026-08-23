@@ -144,6 +144,10 @@ class CollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid SGF coordinate: tt"):
             parse_initial_stones("(;AB[tt])")
 
+    def test_parse_initial_stones_rejects_non_ascii_property_identifier(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Invalid SGF property identifier"):
+            parse_initial_stones("(;\u00c1B[aa])")
+
     def test_parse_initial_stones_treats_unescaped_open_bracket_as_comment_text(
         self,
     ) -> None:
@@ -454,14 +458,11 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(response["problems"][0]["id"], "200-basic-go-problems:24176/174140@1")
         self.assertNotIn("moves", response["problems"][0])
 
-    def test_legacy_collection_endpoint_returns_initial_positions_only(self) -> None:
-        response = self.get_json("/api/collection")
+    def test_removed_legacy_collection_endpoint_returns_not_found(self) -> None:
+        status, response = self.request_json("/api/collection")
 
-        self.assertIsInstance(response, dict)
-        problem = response["problems"][0]
-        self.assertEqual(problem["id"], "200-basic-go-problems:24176/174140@1")
-        self.assertNotIn("moves", problem)
-        self.assertNotIn("solution", problem)
+        self.assertEqual(status, 404)
+        self.assertIn("error", response)
 
     def test_collection_endpoint_returns_structured_not_found_for_unknown_slug(self) -> None:
         status, response = self.request_json("/api/collections/missing")

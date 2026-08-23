@@ -252,10 +252,10 @@ def _parse_sgf_root_properties(source: str) -> dict[str, list[str]]:
             skip_whitespace()
             if index == len(source) or source[index] in ";()":
                 return properties
-            if not source[index].isupper():
+            if source[index] not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
                 raise ValueError("Invalid SGF property identifier")
             property_start = index
-            while index < len(source) and source[index].isupper():
+            while index < len(source) and source[index] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
                 index += 1
             property_name = source[property_start:index]
             skip_whitespace()
@@ -373,9 +373,6 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         request = urlsplit(self.path)
-        if request.path == "/api/collection":
-            self._get_collection("200-basic-go-problems")
-            return
         if request.path == "/api/collections":
             self._send_json(HTTPStatus.OK, self._catalog())
             return

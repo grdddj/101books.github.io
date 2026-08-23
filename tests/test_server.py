@@ -1,10 +1,13 @@
+import hashlib
 import json
+import re
 import socket
 import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -18,6 +21,12 @@ from reader.server import (
     parse_initial_stones,
     source_collection_slug,
 )
+
+
+def user_file_path(progress_path: Path, user: str) -> Path:
+    normalized_user = user.strip()
+    filename = f"{hashlib.sha256(normalized_user.encode()).hexdigest()}.json"
+    return progress_path.parent / "users" / filename
 
 
 class CollectionTests(unittest.TestCase):
@@ -189,126 +198,58 @@ class ProgressStoreTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
 
-    def test_progress_store_persists_a_solved_status(self) -> None:
+    def test_progress_store_uses_safe_deterministic_isolated_user_files(self) -> None:
         path = self.root / "reader-data/progress.json"
         store = ProgressStore(path, {self.problem_id})
 
-        result = store.set_status("Ada", self.problem_id, "solved")
+        ada_progress = store.set_status("../../Ada", self.problem_id, "solved")
+        bert_progress = store.set_status("Bert / ../", self.problem_id, "revisit")
 
-        self.assertEqual(result[self.problem_id]["status"], "solved")
-        saved = json.loads(path.read_text())
-        self.assertEqual(
-            saved["users"]["Ada"]["problems"][self.problem_id]["status"],
-            "solved",
-        )
+        self.assertEqual(ada_progress[self.problem_id]["status"], "solved")
+        self.assertEqual(bert_progress[self.problem_id]["status"], "revisit")
+        user_files = sorted((path.parent / "users").glob("*.json"))
+        self.assertEqual(len(user_files), 2)
+        self.assertTrue(all(file.parent == path.parent / "users" for file in user_files))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}\.json", file.name) for file in user_files))
+        self.assertEqual(user_file_path(path, "../../Ada"), user_file_path(path, "  ../../Ada  "))
+        saved_names = {json.loads(file.read_text())["user"] for file in user_files}
+        self.assertEqual(saved_names, {"../../Ada", "Bert / ../"})
+        self.assertEqual(store.get_user("../../Ada"), ada_progress)
+        self.assertEqual(store.get_user("Bert / ../"), bert_progress)
+        self.assertFalse(path.exists())
 
-    def test_progress_store_migrates_valid_200_basic_legacy_records_before_validation(self) -> None:
+    def test_progress_store_appends_every_repeated_action_event(self) -> None:
         path = self.root / "reader-data/progress.json"
-        legacy_record = {"status": "solved", "updated_at": "2026-08-23T12:00:00Z"}
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps({"users": {"Ada": {"problems": {"24176/174139": legacy_record}}}})
-        )
         store = ProgressStore(path, {self.problem_id})
 
-        result = store.get_user("Ada")
+        store.set_status("Ada", self.problem_id, "solved")
+        store.set_status("Ada", self.problem_id, "solved")
+        result = store.set_status("Ada", self.problem_id, "revisit")
 
-        namespaced_id = "200-basic-go-problems:24176/174139@1"
-        self.assertEqual(result, {namespaced_id: legacy_record})
-        self.assertNotIn("24176/174139", json.loads(path.read_text())["users"]["Ada"]["problems"])
+        events = store.get_activity("Ada", 10)
+        self.assertEqual([event["status"] for event in events], ["revisit", "solved", "solved"])
+        self.assertTrue(all(event["problem_id"] == self.problem_id for event in events))
+        self.assertEqual(result[self.problem_id]["status"], "revisit")
+        saved = json.loads(user_file_path(path, "Ada").read_text())
+        self.assertEqual(len(saved["events"]), 3)
 
-    def test_progress_store_rejects_unknown_legacy_records_instead_of_migrating_them(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "users": {
-                        "Ada": {
-                            "problems": {
-                                "999/1": {"status": "solved", "updated_at": "2026-08-23T12:00:00Z"}
-                            }
-                        }
-                    }
-                }
-            )
-        )
-        store = ProgressStore(path, {self.problem_id})
+    def test_progress_store_activity_is_newest_first_and_limited(self) -> None:
+        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        for status in ("solved", "revisit", "solved"):
+            store.set_status("Ada", self.problem_id, status)
 
-        with self.assertRaises(StorageCorruptionError):
-            store.get_user("Ada")
+        events = store.get_activity("Ada", 2)
 
-    def test_progress_store_does_not_rewrite_malformed_legacy_records(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        legacy_record = {"status": "unseen", "updated_at": "2026-08-23T12:00:00Z"}
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps({"users": {"Ada": {"problems": {"24176/174139": legacy_record}}}})
-        )
-        store = ProgressStore(path, {self.problem_id})
+        self.assertEqual([event["status"] for event in events], ["solved", "revisit"])
 
-        with self.assertRaises(StorageCorruptionError):
-            store.get_user("Ada")
+    def test_progress_store_unseen_removes_status_without_recording_an_event(self) -> None:
+        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store.set_status("Ada", self.problem_id, "solved")
 
-        self.assertEqual(
-            path.read_text(),
-            json.dumps({"users": {"Ada": {"problems": {"24176/174139": legacy_record}}}}),
-        )
+        result = store.set_status("Ada", self.problem_id, "unseen")
 
-    def test_progress_store_leaves_storage_unchanged_when_migration_proposal_is_invalid(
-        self,
-    ) -> None:
-        path = self.root / "reader-data/progress.json"
-        document = {
-            "users": {
-                "Ada": {
-                    "problems": {
-                        "24176/174139": {
-                            "status": "solved",
-                            "updated_at": "2026-08-23T12:00:00Z",
-                        },
-                        "unknown:1/2@1": {
-                            "status": "solved",
-                            "updated_at": "2026-08-23T12:00:00Z",
-                        },
-                    }
-                }
-            }
-        }
-        original_bytes = json.dumps(document, indent=2).encode()
-        path.parent.mkdir(parents=True)
-        path.write_bytes(original_bytes)
-        store = ProgressStore(path, {self.problem_id})
-
-        with self.assertRaises(StorageCorruptionError):
-            store.get_user("Ada")
-
-        self.assertEqual(path.read_bytes(), original_bytes)
-
-    def test_progress_store_leaves_storage_unchanged_for_a_malformed_other_user(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        document = {
-            "users": {
-                "Ada": {
-                    "problems": {
-                        "24176/174139": {
-                            "status": "solved",
-                            "updated_at": "2026-08-23T12:00:00Z",
-                        }
-                    }
-                },
-                "Bert": {"problems": []},
-            }
-        }
-        original_bytes = json.dumps(document, indent=2).encode()
-        path.parent.mkdir(parents=True)
-        path.write_bytes(original_bytes)
-        store = ProgressStore(path, {self.problem_id})
-
-        with self.assertRaises(StorageCorruptionError):
-            store.get_user("Ada")
-
-        self.assertEqual(path.read_bytes(), original_bytes)
+        self.assertEqual(result, {})
+        self.assertEqual(len(store.get_activity("Ada", 10)), 1)
 
     def test_progress_store_rejects_invalid_status_and_unknown_problem(self) -> None:
         store = ProgressStore(self.root / "progress.json", {self.problem_id})
@@ -321,24 +262,13 @@ class ProgressStoreTests(unittest.TestCase):
     def test_progress_store_validates_user_names(self) -> None:
         store = ProgressStore(self.root / "progress.json", {self.problem_id})
 
-        for user in ("", "  Ada  ", "x" * 81):
+        for user in ("", "  Ada  ", "x" * 81, "\ud800"):
             with self.subTest(user=user):
                 if user == "  Ada  ":
                     store.set_status(user, self.problem_id, "solved")
                 else:
                     with self.assertRaisesRegex(ValueError, "Invalid user"):
                         store.set_status(user, self.problem_id, "solved")
-
-    def test_progress_store_removes_unseen_status_and_reads_saved_data(self) -> None:
-        path = self.root / "progress.json"
-        store = ProgressStore(path, {self.problem_id})
-        store.set_status("Ada", self.problem_id, "solved")
-
-        result = store.set_status("Ada", self.problem_id, "unseen")
-
-        self.assertEqual(result, {})
-        self.assertEqual(store.get_user("Ada"), {})
-        self.assertEqual(json.loads(path.read_text())["users"]["Ada"]["problems"], {})
 
     def test_progress_store_records_utc_timestamp_and_reloads(self) -> None:
         path = self.root / "progress.json"
@@ -351,22 +281,24 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertIsNotNone(parsed.utcoffset())
         self.assertEqual(parsed.utcoffset().total_seconds(), 0)
         self.assertEqual(ProgressStore(path, {self.problem_id}).get_user("Ada"), result)
+        event_timestamp = store.get_activity("Ada", 1)[0]["timestamp"]
+        self.assertEqual(event_timestamp, timestamp)
 
     def test_progress_store_keeps_concurrent_updates(self) -> None:
         path = self.root / "progress.json"
         store = ProgressStore(path, {self.problem_id, self.second_problem_id})
-        original_write = store._write
+        original_write = store._write_user_document
         first_write_started = threading.Event()
         allow_first_write = threading.Event()
         second_update_done = threading.Event()
 
-        def blocking_write(data: dict[str, dict[str, object]]) -> None:
+        def blocking_write(user: str, data: dict[str, object]) -> None:
             if not first_write_started.is_set():
                 first_write_started.set()
                 self.assertTrue(allow_first_write.wait(timeout=1))
-            original_write(data)
+            original_write(user, data)
 
-        store._write = blocking_write  # type: ignore[method-assign]
+        store._write_user_document = blocking_write  # type: ignore[method-assign]
         first_update = threading.Thread(
             target=store.set_status,
             args=("Ada", self.problem_id, "solved"),
@@ -390,50 +322,309 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertTrue(second_update_done.is_set())
         self.assertEqual(set(store.get_user("Ada")), {self.problem_id, self.second_problem_id})
 
-    def test_progress_store_rejects_corrupt_nested_schema(self) -> None:
+    def test_progress_store_does_not_block_different_users(self) -> None:
         path = self.root / "progress.json"
         store = ProgressStore(path, {self.problem_id})
+        original_write = store._write_user_document
+        ada_write_started = threading.Event()
+        allow_ada_write = threading.Event()
+        bert_update_done = threading.Event()
+
+        def blocking_ada_write(user: str, data: dict[str, object]) -> None:
+            if user == "Ada":
+                ada_write_started.set()
+                self.assertTrue(allow_ada_write.wait(timeout=1))
+            original_write(user, data)
+
+        store._write_user_document = blocking_ada_write  # type: ignore[method-assign]
+        ada_update = threading.Thread(
+            target=store.set_status, args=("Ada", self.problem_id, "solved")
+        )
+        bert_update = threading.Thread(
+            target=lambda: (
+                store.set_status("Bert", self.problem_id, "revisit"),
+                bert_update_done.set(),
+            )
+        )
+
+        ada_update.start()
+        self.assertTrue(ada_write_started.wait(timeout=1))
+        bert_update.start()
+        self.assertTrue(bert_update_done.wait(timeout=1))
+        allow_ada_write.set()
+        ada_update.join(timeout=1)
+        bert_update.join(timeout=1)
+
+        self.assertFalse(ada_update.is_alive())
+        self.assertFalse(bert_update.is_alive())
+
+    def test_progress_store_rejects_corrupt_per_user_schema(self) -> None:
+        path = self.root / "progress.json"
+        store = ProgressStore(path, {self.problem_id})
+        user_path = user_file_path(path, "Ada")
+        user_path.parent.mkdir(parents=True)
         corrupted_documents = [
-            {"users": []},
-            {"users": {}, "version": 1},
-            {"users": {"Ada": []}},
-            {"users": {" Ada": {"problems": {}}}},
-            {"users": {" ": {"problems": {}}}},
-            {"users": {"Ada": {}}},
-            {"users": {"Ada": {"problems": {}, "extra": True}}},
-            {"users": {"Ada": {"problems": []}}},
-            {"users": {"Ada": {"problems": {"unknown": {}}}}},
+            {"user": "Ada", "problems": {}},
+            {"user": "Wrong", "problems": {}, "events": []},
+            {"user": "Ada", "problems": [], "events": []},
+            {"user": "Ada", "problems": {"unknown": {}}, "events": []},
             {
-                "users": {
-                    "Ada": {
-                        "problems": {
-                            "200-basic-go-problems:24176/174139@1": {
-                                "status": "unseen",
-                                "updated_at": "2026-08-23T12:00:00Z",
-                            }
-                        }
+                "user": "Ada",
+                "problems": {
+                    self.problem_id: {
+                        "status": "unseen",
+                        "updated_at": "2026-08-23T12:00:00Z",
                     }
-                }
+                },
+                "events": [],
             },
             {
-                "users": {
-                    "Ada": {
-                        "problems": {
-                            "200-basic-go-problems:24176/174139@1": {
-                                "status": "solved",
-                                "updated_at": "not-a-timestamp",
-                            }
-                        }
-                    }
-                }
+                "user": "Ada",
+                "problems": {},
+                "events": [
+                    {"problem_id": self.problem_id, "status": "solved", "timestamp": "wrong"}
+                ],
             },
         ]
 
         for data in corrupted_documents:
             with self.subTest(data=data):
-                path.write_text(json.dumps(data))
+                user_path.write_text(json.dumps(data))
                 with self.assertRaises(StorageCorruptionError):
                     store.get_user("Ada")
+
+    def test_legacy_migration_preflights_then_backs_up_and_creates_user_documents(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        document = {
+            "users": {
+                "Ada": {
+                    "problems": {
+                        "24176/174139": {
+                            "status": "solved",
+                            "updated_at": "2026-08-23T12:00:00Z",
+                        }
+                    }
+                },
+                "Bert": {
+                    "problems": {
+                        self.second_problem_id: {
+                            "status": "revisit",
+                            "updated_at": "2026-08-23T13:00:00Z",
+                        }
+                    }
+                },
+            }
+        }
+        original_bytes = json.dumps(document, indent=2).encode()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original_bytes)
+
+        store = ProgressStore(path, {self.problem_id, self.second_problem_id})
+
+        self.assertEqual(store.get_user("Ada")[self.problem_id]["status"], "solved")
+        self.assertEqual(store.get_activity("Ada", 10)[0]["timestamp"], "2026-08-23T12:00:00Z")
+        self.assertEqual(path.read_bytes(), original_bytes)
+        backups = list(path.parent.glob("progress.*.backup.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original_bytes)
+        marker = json.loads((path.parent / "progress-migration.json").read_text())
+        self.assertEqual(marker["state"], "complete")
+        self.assertEqual(len(list((path.parent / "users").glob("*.json"))), 2)
+
+    def test_legacy_migration_rejects_invalid_data_before_writing_anything(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        original_bytes = json.dumps(
+            {
+                "users": {
+                    "Ada": {"problems": {}},
+                    "Bert": {"problems": {"unknown:1/2@1": {}}},
+                }
+            },
+            indent=2,
+        ).encode()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original_bytes)
+
+        with self.assertRaises(StorageCorruptionError):
+            ProgressStore(path, {self.problem_id})
+
+        self.assertEqual(path.read_bytes(), original_bytes)
+        self.assertFalse((path.parent / "users").exists())
+        self.assertFalse((path.parent / "progress-migration.json").exists())
+        self.assertEqual(list(path.parent.glob("progress.*.backup.json")), [])
+
+    def test_legacy_migration_recovers_from_an_in_progress_marker_without_duplicate_events(
+        self,
+    ) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "users": {
+                        "Ada": {
+                            "problems": {
+                                self.problem_id: {
+                                    "status": "solved",
+                                    "updated_at": "2026-08-23T12:00:00Z",
+                                }
+                            }
+                        },
+                        "Bert": {
+                            "problems": {
+                                self.second_problem_id: {
+                                    "status": "revisit",
+                                    "updated_at": "2026-08-23T13:00:00Z",
+                                }
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        first_store = ProgressStore(path, {self.problem_id, self.second_problem_id})
+        marker_path = path.parent / "progress-migration.json"
+        marker = json.loads(marker_path.read_text())
+        marker["state"] = "in_progress"
+        marker_path.write_text(json.dumps(marker))
+        user_file_path(path, "Bert").unlink()
+
+        recovered_store = ProgressStore(path, {self.problem_id, self.second_problem_id})
+
+        self.assertEqual(len(first_store.get_activity("Ada", 10)), 1)
+        self.assertEqual(len(recovered_store.get_activity("Ada", 10)), 1)
+        self.assertEqual(len(recovered_store.get_activity("Bert", 10)), 1)
+        self.assertEqual(json.loads(marker_path.read_text())["state"], "complete")
+        self.assertEqual(len(list(path.parent.glob("progress.*.backup.json"))), 1)
+
+    def test_legacy_migration_refuses_existing_target_without_backup_or_marker(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
+        target = user_file_path(path, "Ada")
+        target.parent.mkdir()
+        target.write_text(json.dumps({"user": "Ada", "problems": {}, "events": []}))
+
+        with self.assertRaisesRegex(StorageCorruptionError, "already exists"):
+            ProgressStore(path, {self.problem_id})
+
+        self.assertFalse((path.parent / "progress-migration.json").exists())
+        self.assertEqual(list(path.parent.glob("progress.*.backup.json")), [])
+
+    def test_completed_migration_marker_rejects_a_missing_migrated_user_file(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
+        ProgressStore(path, {self.problem_id})
+        user_file_path(path, "Ada").unlink()
+
+        with self.assertRaisesRegex(StorageCorruptionError, "missing"):
+            ProgressStore(path, {self.problem_id})
+
+    def test_legacy_backup_collision_never_removes_the_existing_backup(self) -> None:
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> "FixedDateTime":
+                return cls(2026, 8, 23, 12, 34, 56, 123456)
+
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {}}))
+        backup_path = path.parent / "progress.20260823T123456.123456Z.backup.json"
+        backup_path.write_bytes(b"existing backup")
+
+        with patch("reader.server.datetime", FixedDateTime), self.assertRaises(FileExistsError):
+            ProgressStore(path, {self.problem_id})
+
+        self.assertEqual(backup_path.read_bytes(), b"existing backup")
+
+    def test_progress_store_reports_a_corrupt_migration_marker_as_storage_corruption(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {}}))
+        ProgressStore(path, {self.problem_id})
+        marker_path = path.parent / "progress-migration.json"
+        marker = json.loads(marker_path.read_text())
+        marker["targets"] = {"": "unsafe.json"}
+        marker_path.write_text(json.dumps(marker))
+
+        with self.assertRaises(StorageCorruptionError):
+            ProgressStore(path, {self.problem_id})
+
+    def test_legacy_migration_rejects_a_user_name_that_cannot_be_utf8_encoded(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {"\ud800": {"problems": {}}}}))
+
+        with self.assertRaises(StorageCorruptionError):
+            ProgressStore(path, {self.problem_id})
+
+    def test_completed_migration_marker_requires_its_matching_backup(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"users": {}}))
+        ProgressStore(path, {self.problem_id})
+        next(path.parent.glob("progress.*.backup.json")).unlink()
+
+        with self.assertRaisesRegex(StorageCorruptionError, "backup"):
+            ProgressStore(path, {self.problem_id})
+
+    def test_legacy_migration_orders_fractional_timestamps_chronologically(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "users": {
+                        "Ada": {
+                            "problems": {
+                                self.problem_id: {
+                                    "status": "solved",
+                                    "updated_at": "2026-08-23T12:00:00Z",
+                                },
+                                self.second_problem_id: {
+                                    "status": "revisit",
+                                    "updated_at": "2026-08-23T12:00:00.1Z",
+                                },
+                            }
+                        }
+                    }
+                }
+            )
+        )
+
+        store = ProgressStore(path, {self.problem_id, self.second_problem_id})
+
+        self.assertEqual(store.get_activity("Ada", 2)[0]["problem_id"], self.second_problem_id)
+
+    def test_migration_marker_rejects_a_different_compatibility_progress_file(self) -> None:
+        first_path = self.root / "first.json"
+        second_path = self.root / "second.json"
+        first_path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
+        second_path.write_text(json.dumps({"users": {"Bert": {"problems": {}}}}))
+        ProgressStore(first_path, {self.problem_id})
+
+        with self.assertRaisesRegex(StorageCorruptionError, "different legacy progress"):
+            ProgressStore(second_path, {self.problem_id})
+
+    def test_first_user_write_fsyncs_each_new_directory_entry(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        store = ProgressStore(path, {self.problem_id})
+        synced_directories: list[Path] = []
+        original_sync_directory = store._sync_directory
+
+        def recording_sync_directory(directory: Path) -> None:
+            synced_directories.append(directory)
+            original_sync_directory(directory)
+
+        store._sync_directory = recording_sync_directory  # type: ignore[method-assign]
+
+        store.set_status("Ada", self.problem_id, "solved")
+
+        self.assertEqual(
+            synced_directories,
+            [self.root, path.parent, path.parent / "users"],
+        )
 
 
 class HttpApiTests(unittest.TestCase):
@@ -551,6 +742,59 @@ class HttpApiTests(unittest.TestCase):
             response["problems"]["200-basic-go-problems:24176/174140@1"]["status"], "revisit"
         )
 
+    def test_activity_endpoint_returns_limited_newest_events_with_collection_context(self) -> None:
+        for status in ("solved", "revisit", "solved"):
+            self.put_json(
+                "/api/progress",
+                {
+                    "user": "Ada",
+                    "problem_id": "200-basic-go-problems:24176/174140@1",
+                    "status": status,
+                },
+            )
+
+        response = self.get_json("/api/activity?user=Ada&limit=2")
+
+        self.assertEqual([event["status"] for event in response["events"]], ["solved", "revisit"])
+        event = response["events"][0]
+        self.assertEqual(event["problem_id"], "200-basic-go-problems:24176/174140@1")
+        self.assertEqual(event["collection_slug"], "200-basic-go-problems")
+        self.assertEqual(event["collection_title"], "200 Basic Go Problems")
+        self.assertEqual(event["problem_number"], 1)
+        self.assertNotIn("black", event)
+        self.assertNotIn("white", event)
+
+    def test_activity_endpoint_defaults_to_fifty_events(self) -> None:
+        for index in range(55):
+            self.put_json(
+                "/api/progress",
+                {
+                    "user": "Ada",
+                    "problem_id": "200-basic-go-problems:24176/174140@1",
+                    "status": "solved" if index % 2 == 0 else "revisit",
+                },
+            )
+
+        response = self.get_json("/api/activity?user=Ada")
+
+        self.assertEqual(len(response["events"]), 50)
+
+    def test_activity_endpoint_rejects_invalid_queries(self) -> None:
+        for path in (
+            "/api/activity",
+            "/api/activity?user=Ada&user=Bert",
+            "/api/activity?user=Ada&limit=",
+            "/api/activity?user=Ada&limit=nope",
+            "/api/activity?user=Ada&limit=0",
+            "/api/activity?user=Ada&limit=101",
+            "/api/activity?user=Ada&limit=1&limit=2",
+        ):
+            with self.subTest(path=path):
+                status, response = self.request_json(path)
+
+                self.assertEqual(status, 400)
+                self.assertIn("error", response)
+
     def test_api_returns_structured_client_errors(self) -> None:
         status, response = self.request_json("/api/progress", method="PUT", data=b"{")
 
@@ -564,9 +808,16 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_api_returns_server_error_for_corrupt_progress_storage(self) -> None:
-        progress_path = self.root / "reader-data/progress.json"
-        progress_path.parent.mkdir(parents=True)
-        progress_path.write_text("{")
+        self.put_json(
+            "/api/progress",
+            {
+                "user": "Ada",
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+            },
+        )
+        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path.write_text("{")
 
         status, response = self.request_json("/api/progress?user=Ada")
 
@@ -574,9 +825,9 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_get_returns_server_error_for_invalid_utf8_storage(self) -> None:
-        progress_path = self.root / "reader-data/progress.json"
-        progress_path.parent.mkdir(parents=True)
-        progress_path.write_bytes(b"\xff")
+        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path.parent.mkdir(parents=True)
+        user_path.write_bytes(b"\xff")
 
         status, response = self.request_json("/api/progress?user=Ada")
 
@@ -584,9 +835,9 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_put_returns_server_error_for_invalid_utf8_storage(self) -> None:
-        progress_path = self.root / "reader-data/progress.json"
-        progress_path.parent.mkdir(parents=True)
-        progress_path.write_bytes(b"\xff")
+        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path.parent.mkdir(parents=True)
+        user_path.write_bytes(b"\xff")
 
         status, response = self.request_json(
             "/api/progress",
@@ -605,9 +856,9 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_get_returns_server_error_for_malformed_nested_storage(self) -> None:
-        progress_path = self.root / "reader-data/progress.json"
-        progress_path.parent.mkdir(parents=True)
-        progress_path.write_text(json.dumps({"users": {"Ada": {"problems": []}}}))
+        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path.parent.mkdir(parents=True)
+        user_path.write_text(json.dumps({"user": "Ada", "problems": [], "events": []}))
 
         status, response = self.request_json("/api/progress?user=Ada")
 
@@ -615,21 +866,19 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_put_returns_server_error_for_invalid_persisted_record(self) -> None:
-        progress_path = self.root / "reader-data/progress.json"
-        progress_path.parent.mkdir(parents=True)
-        progress_path.write_text(
+        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path.parent.mkdir(parents=True)
+        user_path.write_text(
             json.dumps(
                 {
-                    "users": {
-                        "Ada": {
-                            "problems": {
-                                "200-basic-go-problems:24176/174140@1": {
-                                    "status": "unseen",
-                                    "updated_at": "2026-08-23T12:00:00Z",
-                                }
-                            }
+                    "user": "Ada",
+                    "problems": {
+                        "200-basic-go-problems:24176/174140@1": {
+                            "status": "unseen",
+                            "updated_at": "2026-08-23T12:00:00Z",
                         }
-                    }
+                    },
+                    "events": [],
                 }
             )
         )

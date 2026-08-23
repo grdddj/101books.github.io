@@ -20,16 +20,24 @@ Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
 restores the last booklet selected in that browser. The reader asks for a display
 name once per browser. Use **Change collection** to browse the API-sorted booklet
-catalog and switch collections. Progress is stored locally in `reader-data/progress.json`;
-this directory is intentionally ignored by Git. Several unauthenticated
-browser-local profiles can use the same local process, but the progress model
-is not a shared or network service.
+catalog and switch collections. Progress is stored in one JSON document per
+display name below `reader-data/users/`; this directory is intentionally ignored
+by Git. Filenames are deterministic SHA-256 digests, while each document retains
+the display name, current problem records, and the append-only solved/revisit
+event history. Several unauthenticated browser-local profiles can use the same
+process. Updates are synchronized per user within that process, but the store
+does not provide cross-process coordination.
 
 Progress records are scoped to the selected booklet and to repeated positions
 within it. Their IDs use the form `<booklet-slug>:<section>/<problem>@<occurrence>`,
 so solving a position in one booklet never marks another booklet's position
-complete. On the first read of an existing progress file, valid legacy 200
-Basic Go Problems records are migrated to the corresponding namespaced IDs.
+complete. During shared-file migration, valid legacy 200 Basic Go Problems IDs
+are converted to their corresponding namespaced IDs. Each migrated current
+status also becomes one initial activity event at its existing timestamp.
+
+`GET /api/activity?user=<name>&limit=<count>` returns newest-first activity with
+collection titles and problem numbers. The limit defaults to 50 and must be from
+1 through 100. The endpoint exposes neither moves nor solutions.
 
 The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status.
 
@@ -83,11 +91,22 @@ uv run --frozen python -m reader.server \
 ```
 
 `--base-path` accepts a path with or without its leading or trailing slash and
-normalizes it to one canonical prefix. `--data-dir` stores the progress file
+normalizes it to one canonical prefix. `--data-dir` stores the progress data
 outside the checkout; it cannot be combined with the compatibility option
-`--progress-file`. Back up the JSON application data in `/var/lib/tsumego` and
-restore it with ownership retained by the `tsumego` service account. Exclude
-the reproducible `.venv` and `.cache` directories from backups.
+`--progress-file`.
+
+On the first start where the data directory contains the legacy shared
+`progress.json`, the server validates the complete document before writing,
+creates a timestamped byte-for-byte backup, and migrates each profile into
+`users/`. `progress-migration.json` records the restart-safe migration state. An
+interrupted migration resumes without duplicating events; an existing target,
+missing completed target, corrupt source, or corrupt backup stops startup instead
+of overwriting or silently dropping progress.
+
+Back up all JSON application data in `/var/lib/tsumego`, including `users/`, the
+legacy backup, and the migration marker, and restore it with ownership retained
+by the `tsumego` service account. Exclude the reproducible `.venv` and `.cache`
+directories from backups.
 
 Production uses `uv run --frozen` so a stale or missing lockfile fails startup
 instead of changing the deployed dependency set.

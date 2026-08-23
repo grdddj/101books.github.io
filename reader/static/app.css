@@ -1,0 +1,161 @@
+:root {
+  color: #1f1a16;
+  background: #f7f3ed;
+  font-family: system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  color: inherit;
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 3px solid #0a6fba;
+  outline-offset: 3px;
+}
+
+.reader-header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  border-bottom: 1px solid #d8cec0;
+  background: rgb(247 243 237 / 96%);
+  backdrop-filter: blur(8px);
+}
+
+.header-content,
+.reader {
+  width: min(100% - 2rem, 48rem);
+  margin: 0 auto;
+}
+
+.header-content {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(1.1rem, 3vw, 1.5rem);
+}
+
+#progress-summary,
+#status-feedback {
+  color: #5c5147;
+  font-size: 0.9rem;
+}
+
+.reader {
+  display: grid;
+  justify-items: center;
+  gap: 0.9rem;
+  padding: 1rem 0 1.5rem;
+}
+
+.problem-ordinal {
+  font-weight: 700;
+}
+
+.goban {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(19, minmax(0, 1fr));
+  grid-template-rows: repeat(19, minmax(0, 1fr));
+  width: min(100%, calc(100vh - 13rem), 42rem);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid #735026;
+  border-radius: 0.2rem;
+  background: #d7a762;
+  box-shadow: 0 0.35rem 1rem rgb(62 40 17 / 20%);
+}
+
+.goban::before {
+  position: absolute;
+  inset: calc(100% / 36);
+  border: 1px solid #3c2a16;
+  content: "";
+  background-image:
+    linear-gradient(to right, transparent calc(100% - 1px), #3c2a16 calc(100% - 1px)),
+    linear-gradient(to bottom, transparent calc(100% - 1px), #3c2a16 calc(100% - 1px));
+  background-size: calc(100% / 18) calc(100% / 18);
+}
+
+.stone {
+  z-index: 1;
+  width: 76%;
+  aspect-ratio: 1;
+  align-self: center;
+  justify-self: center;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.stone.black {
+  background: radial-gradient(circle at 32% 26%, #646464, #070707 68%);
+  box-shadow: 0 0.08rem 0.14rem rgb(0 0 0 / 55%);
+}
+
+.stone.white {
+  background: radial-gradient(circle at 32% 26%, #fff, #dfdfdf 70%);
+  box-shadow: 0 0.08rem 0.14rem rgb(0 0 0 / 42%);
+}
+
+.reader-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.reader-controls button {
+  min-width: 6.5rem;
+  min-height: 2.7rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid #7b6a59;
+  border-radius: 0.35rem;
+  background: #fffdf9;
+  cursor: pointer;
+}
+
+.reader-controls button:hover:not(:disabled) {
+  background: #efe5d8;
+}
+
+.reader-controls button.is-selected {
+  border-color: #1b6144;
+  background: #d9f0e1;
+  color: #124631;
+  font-weight: 700;
+}
+
+.reader-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+@media (max-height: 42rem) {
+  .reader {
+    gap: 0.55rem;
+    padding-top: 0.6rem;
+  }
+
+  .goban {
+    width: min(100%, calc(100vh - 10.5rem), 42rem);
+  }
+}

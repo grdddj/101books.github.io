@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -28,11 +29,13 @@ class ProgressStore:
     def __init__(self, path: Path, problem_ids: set[str]) -> None:
         self.path = path
         self.problem_ids = problem_ids
+        self._lock = threading.Lock()
 
     def get_user(self, user: str) -> dict[str, dict[str, str]]:
         user = self._validate_user(user)
-        data = self._read()
-        return dict(data["users"].get(user, {}).get("problems", {}))
+        with self._lock:
+            data = self._read()
+            return dict(data["users"].get(user, {}).get("problems", {}))
 
     def set_status(
         self, user: str, problem_id: str, status: str
@@ -43,21 +46,22 @@ class ProgressStore:
         if problem_id not in self.problem_ids:
             raise ValueError(f"Unknown problem: {problem_id}")
 
-        data = self._read()
-        users = data["users"]
-        user_data = users.setdefault(user, {"problems": {}})
-        problems = user_data.setdefault("problems", {})
-        if status == "unseen":
-            problems.pop(problem_id, None)
-        else:
-            problems[problem_id] = {
-                "status": status,
-                "updated_at": datetime.now(timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z"),
-            }
-        self._write(data)
-        return dict(problems)
+        with self._lock:
+            data = self._read()
+            users = data["users"]
+            user_data = users.setdefault(user, {"problems": {}})
+            problems = user_data.setdefault("problems", {})
+            if status == "unseen":
+                problems.pop(problem_id, None)
+            else:
+                problems[problem_id] = {
+                    "status": status,
+                    "updated_at": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                }
+            self._write(data)
+            return dict(problems)
 
     def _validate_user(self, user: str) -> str:
         normalized = user.strip()
@@ -68,7 +72,7 @@ class ProgressStore:
     def _read(self) -> dict[str, dict[str, object]]:
         if not self.path.is_file():
             return {"users": {}}
-        data = json.loads(self.path.read_text())
+        data = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
             raise TypeError("Invalid progress data")
         return data
@@ -210,6 +214,9 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             problems = self.progress_store.set_status(
                 payload["user"], payload["problem_id"], payload["status"]
             )
+        except UnicodeDecodeError as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
         except json.JSONDecodeError as error:
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
             return
@@ -229,6 +236,9 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             return
         try:
             problems = self.progress_store.get_user(users[0])
+        except UnicodeDecodeError as error:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
         except json.JSONDecodeError as error:
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
             return

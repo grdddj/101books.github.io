@@ -136,6 +136,46 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(parsed.utcoffset().total_seconds(), 0)
         self.assertEqual(ProgressStore(path, {"24176/174139"}).get_user("Ada"), result)
 
+    def test_progress_store_keeps_concurrent_updates(self) -> None:
+        path = self.root / "progress.json"
+        store = ProgressStore(path, {"24176/174139", "24176/174140"})
+        original_write = store._write
+        first_write_started = threading.Event()
+        allow_first_write = threading.Event()
+        second_update_done = threading.Event()
+
+        def blocking_write(data: dict[str, dict[str, object]]) -> None:
+            if not first_write_started.is_set():
+                first_write_started.set()
+                self.assertTrue(allow_first_write.wait(timeout=1))
+            original_write(data)
+
+        store._write = blocking_write  # type: ignore[method-assign]
+        first_update = threading.Thread(
+            target=store.set_status,
+            args=("Ada", "24176/174139", "solved"),
+        )
+        second_update = threading.Thread(
+            target=lambda: (
+                store.set_status("Ada", "24176/174140", "revisit"),
+                second_update_done.set(),
+            ),
+        )
+
+        first_update.start()
+        self.assertTrue(first_write_started.wait(timeout=1))
+        second_update.start()
+        allow_first_write.set()
+        first_update.join(timeout=1)
+        second_update.join(timeout=1)
+
+        self.assertFalse(first_update.is_alive())
+        self.assertFalse(second_update.is_alive())
+        self.assertTrue(second_update_done.is_set())
+        self.assertEqual(
+            set(store.get_user("Ada")), {"24176/174139", "24176/174140"}
+        )
+
 
 class HttpApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -188,6 +228,33 @@ class HttpApiTests(unittest.TestCase):
         progress_path.write_text("{")
 
         status, response = self.request_json("/api/progress?user=Ada")
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+
+    def test_progress_get_returns_server_error_for_invalid_utf8_storage(self) -> None:
+        progress_path = self.root / "reader-data/progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_bytes(b"\xff")
+
+        status, response = self.request_json("/api/progress?user=Ada")
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+
+    def test_progress_put_returns_server_error_for_invalid_utf8_storage(self) -> None:
+        progress_path = self.root / "reader-data/progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_bytes(b"\xff")
+
+        status, response = self.request_json(
+            "/api/progress",
+            method="PUT",
+            data=json.dumps(
+                {"user": "Ada", "problem_id": "24176/174140", "status": "solved"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
 
         self.assertEqual(status, 500)
         self.assertIn("error", response)

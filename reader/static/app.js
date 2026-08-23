@@ -8,8 +8,13 @@ const previousButton = document.querySelector("#previous");
 const solvedButton = document.querySelector("#solved");
 const revisitButton = document.querySelector("#revisit");
 const nextButton = document.querySelector("#next");
+const changeCollectionButton = document.querySelector("#change-collection");
+const collectionPanel = document.querySelector("#collection-panel");
+const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
+const collectionList = document.querySelector("#collection-list");
 
 let collection;
+let catalog = [];
 let currentIndex = 0;
 let statuses = {};
 let user;
@@ -17,7 +22,10 @@ let wheelDelta = 0;
 let wheelTimer;
 let lastWheelNavigation = 0;
 let isSaving = false;
+let isLoadingCollection = false;
+let collectionButtons = [];
 
+const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
@@ -55,6 +63,56 @@ function firstPendingIndex(problems, statuses) {
     ({ id }) => !statuses[id] || statuses[id].status === "revisit",
   );
   return index === -1 ? 0 : index;
+}
+
+function getSavedCollection(collectionCatalog) {
+  const saved = localStorage.getItem(COLLECTION_STORAGE_KEY);
+  return collectionCatalog.some(({ slug }) => slug === saved)
+    ? saved
+    : collectionCatalog[0].slug;
+}
+
+function getStatusTotals(problems) {
+  return problems.reduce(
+    (totals, { id }) => {
+      const status = statuses[id]?.status;
+      if (status === "solved") totals.solved += 1;
+      if (status === "revisit") totals.revisit += 1;
+      return totals;
+    },
+    { solved: 0, revisit: 0 },
+  );
+}
+
+function getCatalogStatusTotals(slug) {
+  const prefix = `${slug}:`;
+  return Object.entries(statuses).reduce(
+    (totals, [problemId, { status }]) => {
+      if (!problemId.startsWith(prefix)) return totals;
+      if (status === "solved") totals.solved += 1;
+      if (status === "revisit") totals.revisit += 1;
+      return totals;
+    },
+    { solved: 0, revisit: 0 },
+  );
+}
+
+function renderCollectionList() {
+  if (!collectionList) return;
+  collectionButtons = catalog.map((item) => {
+    const totals = getCatalogStatusTotals(item.slug);
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "collection-option";
+    option.textContent = `${item.title} · ${item.level} · ${item.category} · ${item.problem_count} problems · Solved: ${totals.solved} · Revisit: ${totals.revisit}`;
+    option.setAttribute("data-collection-slug", item.slug);
+    option.addEventListener("click", () => selectCollection(item.slug));
+    const listItem = document.createElement("li");
+    listItem.append(option);
+    return { listItem, option };
+  });
+  collectionList.replaceChildren(...collectionButtons.map(({ listItem }) => listItem));
+  setCollectionControlsDisabled(isSaving || isLoadingCollection);
 }
 
 function getCoordinatePosition(coordinate) {
@@ -132,20 +190,19 @@ function renderReader() {
   try {
     const problem = collection.problems[currentIndex];
     const currentStatus = statuses[problem.id]?.status || "unseen";
-    const solvedCount = Object.values(statuses).filter(
-      ({ status }) => status === "solved",
-    ).length;
-    const revisitCount = Object.values(statuses).filter(
-      ({ status }) => status === "revisit",
-    ).length;
+    const { solved: solvedCount, revisit: revisitCount } = getStatusTotals(
+      collection.problems,
+    );
+    const controlsDisabled = isSaving || isLoadingCollection;
 
     collectionTitle.textContent = collection.title;
     problemOrdinal.textContent = `Problem ${problem.number} of ${collection.problems.length}`;
     progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
-    previousButton.disabled = isSaving || currentIndex === 0;
-    nextButton.disabled = isSaving || collection.problems.length === currentIndex + 1;
-    solvedButton.disabled = isSaving;
-    revisitButton.disabled = isSaving;
+    previousButton.disabled = controlsDisabled || currentIndex === 0;
+    nextButton.disabled = controlsDisabled || collection.problems.length === currentIndex + 1;
+    solvedButton.disabled = controlsDisabled;
+    revisitButton.disabled = controlsDisabled;
+    setCollectionControlsDisabled(controlsDisabled);
     setSelectedStatus(solvedButton, currentStatus === "solved");
     setSelectedStatus(revisitButton, currentStatus === "revisit");
     renderBoard(problem);
@@ -167,7 +224,7 @@ async function setCurrentStatus(status) {
     showError(new Error("Reader is still loading."));
     return;
   }
-  if (isSaving) return;
+  if (isSaving || isLoadingCollection) return;
 
   const submittedIndex = currentIndex;
   const problem = collection.problems[submittedIndex];
@@ -181,6 +238,7 @@ async function setCurrentStatus(status) {
     });
     statuses = savedProgress.problems;
     isSaving = false;
+    renderCollectionList();
     const submittedProblemIsCurrent = collection.problems[currentIndex]?.id === problem.id;
     if (submittedProblemIsCurrent && submittedIndex < collection.problems.length - 1) {
       navigate(1);
@@ -196,7 +254,7 @@ async function setCurrentStatus(status) {
 }
 
 function navigate(delta) {
-  if (!hasCollection() || isSaving) return;
+  if (!hasCollection() || isSaving || isLoadingCollection) return;
   currentIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),
@@ -231,6 +289,10 @@ function handleWheel(event) {
 }
 
 function handleKeydown(event) {
+  if (event.key === "Escape" && collectionPanel && !collectionPanel.hidden) {
+    closeCollectionPanel();
+    return;
+  }
   if (
     event.defaultPrevented ||
     event.altKey ||
@@ -269,25 +331,74 @@ function setControlsDisabled(disabled) {
   ]) {
     button.disabled = disabled;
   }
+  setCollectionControlsDisabled(disabled);
+}
+
+function setCollectionControlsDisabled(disabled) {
+  if (changeCollectionButton) changeCollectionButton.disabled = disabled;
+  for (const { option } of collectionButtons) {
+    option.disabled = disabled;
+  }
 }
 
 function showError(error) {
   statusFeedback.textContent = error instanceof Error ? error.message : String(error);
 }
 
+function closeCollectionPanel() {
+  if (!collectionPanel) return;
+  collectionPanel.hidden = true;
+  changeCollectionButton?.setAttribute("aria-expanded", "false");
+}
+
+function openCollectionPanel() {
+  if (isSaving || isLoadingCollection || !collectionPanel) return;
+  collectionPanel.hidden = false;
+  changeCollectionButton?.setAttribute("aria-expanded", "true");
+}
+
+async function loadActiveCollection(slug) {
+  const nextCollection = await fetchJson(`/api/collections/${encodeURIComponent(slug)}`);
+  const nextStatuses = (await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`)).problems;
+  collection = nextCollection;
+  statuses = nextStatuses;
+  currentIndex = firstPendingIndex(collection.problems, statuses);
+  renderCollectionList();
+  renderReader();
+}
+
+async function selectCollection(slug) {
+  if (isSaving || isLoadingCollection) return;
+  localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
+  closeCollectionPanel();
+  isLoadingCollection = true;
+  setControlsDisabled(true);
+  try {
+    await loadActiveCollection(slug);
+    statusFeedback.textContent = `Selected ${collection.title}.`;
+  } catch (error) {
+    showError(error);
+  } finally {
+    isLoadingCollection = false;
+    if (hasCollection()) renderReader();
+  }
+}
+
 async function startReader() {
+  isLoadingCollection = true;
   try {
     setControlsDisabled(true);
     user = getOrPromptUser();
-    collection = await fetchJson("/api/collection");
-    const progress = await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`);
-    statuses = progress.problems;
-    currentIndex = firstPendingIndex(collection.problems, statuses);
-    if (renderReader()) {
-      statusFeedback.textContent = `Tracking progress for ${user}.`;
-    }
+    catalog = await fetchJson("/api/collections");
+    const slug = getSavedCollection(catalog);
+    localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
+    await loadActiveCollection(slug);
+    statusFeedback.textContent = `Tracking progress for ${user}.`;
   } catch (error) {
     showError(error);
+  } finally {
+    isLoadingCollection = false;
+    if (hasCollection()) renderReader();
   }
 }
 
@@ -295,6 +406,8 @@ previousButton.addEventListener("click", () => navigate(-1));
 nextButton.addEventListener("click", () => navigate(1));
 solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
+changeCollectionButton?.addEventListener("click", openCollectionPanel);
+closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });
 

@@ -39,7 +39,7 @@ button:focus-visible {
 
 .header-content {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 0;
@@ -54,10 +54,74 @@ h1 {
   font-size: clamp(1.1rem, 3vw, 1.5rem);
 }
 
+.header-content > button,
+.collection-panel button {
+  min-height: 2.4rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid #7b6a59;
+  border-radius: 0.35rem;
+  background: #fffdf9;
+  cursor: pointer;
+}
+
+.header-content > button:hover:not(:disabled),
+.collection-panel button:hover:not(:disabled) {
+  background: #efe5d8;
+}
+
+.header-content > button:disabled,
+.collection-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 #progress-summary,
 #status-feedback {
   color: #5c5147;
   font-size: 0.9rem;
+}
+
+.collection-panel {
+  position: fixed;
+  z-index: 3;
+  top: 1rem;
+  right: 1rem;
+  left: 1rem;
+  width: min(100% - 2rem, 48rem);
+  max-height: calc(100vh - 2rem);
+  margin: 0 auto;
+  overflow: auto;
+  border: 1px solid #7b6a59;
+  border-radius: 0.5rem;
+  background: #f7f3ed;
+  box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
+}
+
+.collection-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid #d8cec0;
+}
+
+.collection-panel__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.collection-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 1rem;
+  list-style: none;
+}
+
+.collection-option {
+  width: 100%;
+  text-align: left;
 }
 
 .reader {

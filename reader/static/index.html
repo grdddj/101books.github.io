@@ -10,10 +10,35 @@
   <body>
     <header class="reader-header">
       <div class="header-content">
-        <h1 id="collection-title">Go problem reader</h1>
-        <p id="progress-summary" aria-live="polite"></p>
+        <div>
+          <h1 id="collection-title">Go problem reader</h1>
+          <p id="progress-summary" aria-live="polite"></p>
+        </div>
+        <button
+          id="change-collection"
+          type="button"
+          aria-controls="collection-panel"
+          aria-expanded="false"
+          disabled
+        >
+          Change collection
+        </button>
       </div>
     </header>
+    <section
+      id="collection-panel"
+      class="collection-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="collection-panel-title"
+      hidden
+    >
+      <div class="collection-panel__header">
+        <h2 id="collection-panel-title">Choose a collection</h2>
+        <button id="close-collection-panel" type="button">Close</button>
+      </div>
+      <ul id="collection-list" class="collection-list" aria-label="Available collections"></ul>
+    </section>
     <main id="app" class="reader">
       <p id="problem-ordinal" class="problem-ordinal"></p>
       <div

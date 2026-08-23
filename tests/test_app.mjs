@@ -18,7 +18,9 @@ function createElement() {
     contains() {
       return false;
     },
-    replaceChildren() {},
+    replaceChildren(...children) {
+      this.appended = children;
+    },
     setAttribute(name, value) {
       this.attributes[name] = value;
       if (name === "class") this.className = value;
@@ -32,9 +34,14 @@ function createElement() {
   };
 }
 
-function loadApp({ fetchImpl, promptResult, savedName = null }) {
+function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = null }) {
   const elements = new Map();
-  const localStorage = new Map(savedName === null ? [] : [["static-go-reader-user", savedName]]);
+  const localStorage = new Map(
+    [
+      ["static-go-reader-user", savedName],
+      ["static-go-reader-collection", savedCollection],
+    ].filter(([, value]) => value !== null),
+  );
   const context = {
     Date,
     Error,
@@ -90,8 +97,11 @@ globalThis.readerTestApi = {
   getBoardCrop: typeof getBoardCrop === "function" ? getBoardCrop : undefined,
   getCurrentIndex: () => currentIndex,
   getOrPromptUser,
+  getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
+  loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
   renderBoard,
+  selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
   startReader,
 };`,
@@ -121,7 +131,20 @@ function createProblems() {
 function createFetch({ rejectPut = false } = {}) {
   const problems = createProblems();
   return async (path, options = {}) => {
-    if (path === "/api/collection") return response({ title: "Test collection", problems });
+    if (path === "/api/collections") {
+      return response([
+        {
+          slug: "test-collection",
+          title: "Test collection",
+          category: "tsumego",
+          level: "20 kyu",
+          problem_count: problems.length,
+        },
+      ]);
+    }
+    if (path === "/api/collections/test-collection") {
+      return response({ slug: "test-collection", title: "Test collection", problems });
+    }
     if (path.startsWith("/api/progress?") && options.method === undefined) {
       return response({ problems: {} });
     }
@@ -133,6 +156,137 @@ function createFetch({ rejectPut = false } = {}) {
     throw new Error(`Unexpected request: ${path}`);
   };
 }
+
+function createCollectionFixture() {
+  const catalog = [
+    {
+      slug: "basic",
+      title: "Basic shapes",
+      category: "tsumego",
+      level: "20 kyu",
+      problem_count: 2,
+    },
+    {
+      slug: "advanced",
+      title: "Advanced shapes",
+      category: "life and death",
+      level: "1 dan",
+      problem_count: 3,
+    },
+  ];
+  const collections = {
+    basic: {
+      slug: "basic",
+      title: "Basic shapes",
+      problems: [
+        { id: "basic:1@1", number: 1, black: ["aa"], white: [] },
+        { id: "basic:2@1", number: 2, black: ["bb"], white: [] },
+      ],
+    },
+    advanced: {
+      slug: "advanced",
+      title: "Advanced shapes",
+      problems: [
+        { id: "advanced:1@1", number: 1, black: ["cc"], white: [] },
+        { id: "advanced:2@1", number: 2, black: ["dd"], white: [] },
+        { id: "advanced:3@1", number: 3, black: ["ee"], white: [] },
+      ],
+    },
+  };
+  return { catalog, collections };
+}
+
+function createCollectionFetch({ problems = {} } = {}) {
+  const { catalog, collections } = createCollectionFixture();
+  const calls = [];
+  return {
+    calls,
+    catalog,
+    fetchImpl: async (path) => {
+      calls.push(path);
+      if (path === "/api/collections") return response(catalog);
+      if (path.startsWith("/api/collections/")) {
+        return response(collections[decodeURIComponent(path.slice("/api/collections/".length))]);
+      }
+      if (path.startsWith("/api/progress?")) return response({ problems });
+      throw new Error(`Unexpected request: ${path}`);
+    },
+  };
+}
+
+test("a valid saved collection is loaded after the catalog and starts at its first revisit", async () => {
+  const { fetchImpl, calls } = createCollectionFetch({
+    problems: {
+      "advanced:1@1": { status: "solved" },
+      "advanced:2@1": { status: "revisit" },
+    },
+  });
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "advanced",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(calls, [
+    "/api/collections",
+    "/api/collections/advanced",
+    "/api/progress?user=Ada",
+  ]);
+  assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
+
+test("an invalid saved collection falls back to the first API-sorted catalog entry", async () => {
+  const { fetchImpl, catalog } = createCollectionFetch();
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "missing",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getSavedCollection(catalog), "basic");
+  assert.equal(localStorage.get("static-go-reader-collection"), "basic");
+  assert.deepEqual(
+    elements
+      .get("#collection-list")
+      .appended.map((item) => item.appended[0].textContent),
+    [
+      "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 0 · Revisit: 0",
+      "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 0 · Revisit: 0",
+    ],
+  );
+  assert.ok(catalog.every((item) => !("problems" in item) && !("moves" in item)));
+});
+
+test("selecting a collection persists it, closes the panel, and scopes progress to its namespace", async () => {
+  const { fetchImpl } = createCollectionFetch({
+    problems: {
+      "basic:1@1": { status: "solved" },
+      "advanced:1@1": { status: "solved" },
+      "advanced:2@1": { status: "revisit" },
+    },
+  });
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "basic",
+  });
+  await context.readerTestApi.startReader();
+  elements.get("#collection-panel").hidden = false;
+
+  await context.readerTestApi.selectCollection("advanced");
+
+  assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
+  assert.equal(elements.get("#collection-panel").hidden, true);
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(elements.get("#progress-summary").textContent, "Solved: 1 · Revisit: 1 · Total: 3");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
 
 test("invalid saved name is discarded before a normalized replacement is stored", () => {
   const { context, localStorage } = loadApp({ promptResult: "  Ada  ", savedName: " ".repeat(81) });
@@ -248,7 +402,12 @@ test("duplicate status actions and navigation are ignored while a save is pendin
   const problems = createProblems();
   let putCalls = 0;
   const fetchImpl = async (path, options = {}) => {
-    if (path === "/api/collection") return response({ title: "Test collection", problems });
+    if (path === "/api/collections") {
+      return response([{ slug: "test-collection", title: "Test collection", category: "tsumego", level: "20 kyu", problem_count: problems.length }]);
+    }
+    if (path === "/api/collections/test-collection") {
+      return response({ slug: "test-collection", title: "Test collection", problems });
+    }
     if (path.startsWith("/api/progress?")) return response({ problems: {} });
     if (path === "/api/progress" && options.method === "PUT") {
       putCalls += 1;
@@ -280,7 +439,12 @@ test("a failed pending save retains the visible problem and restores controls", 
   const pendingSave = Promise.withResolvers();
   const problems = createProblems();
   const fetchImpl = async (path, options = {}) => {
-    if (path === "/api/collection") return response({ title: "Test collection", problems });
+    if (path === "/api/collections") {
+      return response([{ slug: "test-collection", title: "Test collection", category: "tsumego", level: "20 kyu", problem_count: problems.length }]);
+    }
+    if (path === "/api/collections/test-collection") {
+      return response({ slug: "test-collection", title: "Test collection", problems });
+    }
     if (path.startsWith("/api/progress?")) return response({ problems: {} });
     if (path === "/api/progress" && options.method === "PUT") return pendingSave.promise;
     throw new Error(`Unexpected request: ${path}`);

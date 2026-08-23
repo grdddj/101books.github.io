@@ -153,9 +153,10 @@ function renderCollectionList() {
   collectionButtons = catalog.map((item) => {
     const totals = getCatalogStatusTotals(item.slug);
     const solvedPercentage = (totals.solved / item.problem_count) * 100;
-    const solvedPercentageLabel = Math.round(solvedPercentage);
+    const isComplete = totals.solved === item.problem_count;
+    const solvedPercentageLabel = isComplete ? 100 : Math.min(99, Math.round(solvedPercentage));
     const stateClass =
-      totals.solved === item.problem_count
+      isComplete
         ? "collection-option--complete"
         : totals.solved > 0
           ? "collection-option--partial"

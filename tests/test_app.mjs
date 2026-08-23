@@ -594,15 +594,14 @@ test("an invalid saved collection falls back to the first API-sorted catalog ent
 });
 
 test("the collection list shows progress states and solved percentages", async () => {
-  const { fetchImpl, catalog } = createCollectionFetch({
-    problems: {
-      "advanced:1@1": { status: "revisit" },
-      "partial:1@1": { status: "solved" },
-      "thirds:1@1": { status: "solved" },
-      "complete:1@1": { status: "solved" },
-      "complete:2@1": { status: "solved" },
-    },
-  });
+  const problems = {
+    "advanced:1@1": { status: "revisit" },
+    "partial:1@1": { status: "solved" },
+    "thirds:1@1": { status: "solved" },
+    "complete:1@1": { status: "solved" },
+    "complete:2@1": { status: "solved" },
+  };
+  const { fetchImpl, catalog } = createCollectionFetch({ problems });
   catalog.push(
     {
       slug: "partial",
@@ -625,7 +624,17 @@ test("the collection list shows progress states and solved percentages", async (
       level: "5 kyu",
       problem_count: 2,
     },
+    {
+      slug: "almost-complete",
+      title: "Almost complete shapes",
+      category: "tesuji",
+      level: "4 kyu",
+      problem_count: 200,
+    },
   );
+  for (let problem = 1; problem <= 199; problem += 1) {
+    problems[`almost-complete:${problem}@1`] = { status: "solved" };
+  }
   const { context, elements } = loadApp({
     fetchImpl,
     promptResult: "Ada",
@@ -642,16 +651,19 @@ test("the collection list shows progress states and solved percentages", async (
   assert.equal(options[2].className, "collection-option collection-option--partial");
   assert.equal(options[3].className, "collection-option collection-option--partial");
   assert.equal(options[4].className, "collection-option collection-option--complete");
+  assert.equal(options[5].className, "collection-option collection-option--partial");
   assert.equal(options[0].style["--collection-progress"], "0%");
   assert.equal(options[1].style["--collection-progress"], "0%");
   assert.equal(options[2].style["--collection-progress"], "25%");
   assert.equal(options[3].style["--collection-progress"], "33.33333333333333%");
   assert.equal(options[4].style["--collection-progress"], "100%");
+  assert.equal(options[5].style["--collection-progress"], "99.5%");
   assert.match(options[0].appended[0].textContent, /Solved: 0 \(0%\)/);
   assert.match(options[1].appended[0].textContent, /Solved: 0 \(0%\)/);
   assert.match(options[2].appended[0].textContent, /Solved: 1 \(25%\)/);
   assert.match(options[3].appended[0].textContent, /Solved: 1 \(33%\)/);
   assert.match(options[4].appended[0].textContent, /Solved: 2 \(100%\)/);
+  assert.match(options[5].appended[0].textContent, /Solved: 199 \(99%\)/);
   assert.match(appCss, /var\(--collection-progress\)/);
   assert.match(
     appCss,

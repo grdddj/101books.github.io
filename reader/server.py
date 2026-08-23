@@ -23,6 +23,16 @@ class Problem:
     white: list[str]
 
 
+@dataclass(frozen=True)
+class Collection:
+    slug: str
+    title: str
+    category: str
+    level: str
+    rank: int
+    problems: list[Problem]
+
+
 class StorageCorruptionError(Exception):
     """Raised when the persisted progress document does not match its schema."""
 
@@ -77,8 +87,45 @@ class ProgressStore:
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
             raise StorageCorruptionError("Progress storage is corrupted") from error
 
+        if self._migrate_legacy_200_basic_records(data):
+            self._write(data)
         self._validate_data(data)
         return data
+
+    def _migrate_legacy_200_basic_records(self, data: object) -> bool:
+        if not isinstance(data, dict) or set(data) != {"users"}:
+            return False
+        users = data["users"]
+        if not isinstance(users, dict):
+            return False
+
+        prefix = "200-basic-go-problems:"
+        legacy_ids = {
+            problem_id.removeprefix(prefix)
+            for problem_id in self.problem_ids
+            if problem_id.startswith(prefix)
+        }
+        migrated = False
+        for user_data in users.values():
+            if not isinstance(user_data, dict) or set(user_data) != {"problems"}:
+                continue
+            problems = user_data["problems"]
+            if not isinstance(problems, dict):
+                continue
+            for problem_id in list(problems):
+                if not isinstance(problem_id, str):
+                    continue
+                if ":" in problem_id:
+                    continue
+                if problem_id not in legacy_ids:
+                    raise StorageCorruptionError("Progress storage is corrupted")
+                namespaced_id = collection_problem_id("200-basic-go-problems", problem_id)
+                if namespaced_id in problems:
+                    raise StorageCorruptionError("Progress storage is corrupted")
+                self._validate_record_data(problems[problem_id])
+                problems[namespaced_id] = problems.pop(problem_id)
+                migrated = True
+        return migrated
 
     def _validate_data(self, data: object) -> None:
         if not isinstance(data, dict) or set(data) != {"users"}:
@@ -101,6 +148,9 @@ class ProgressStore:
     def _validate_record(self, problem_id: object, record: object) -> None:
         if not isinstance(problem_id, str) or problem_id not in self.problem_ids:
             raise StorageCorruptionError("Progress storage is corrupted")
+        self._validate_record_data(record)
+
+    def _validate_record_data(self, record: object) -> None:
         if not isinstance(record, dict) or set(record) != {"status", "updated_at"}:
             raise StorageCorruptionError("Progress storage is corrupted")
         status = record["status"]
@@ -194,43 +244,82 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
     return stones["AB"], stones["AW"]
 
 
-def load_collection(repository_root: Path) -> list[Problem]:
-    source = (repository_root / "books/200-basic-go-problems.tex").read_text()
-    identifiers = re.findall(r"\\p\{(\d+)\}\{(\d+)\}", source)
-    problems: list[Problem] = []
+def source_collection_slug(booklet_slug: str) -> str:
+    return re.sub(r"-part-\d+$", "", booklet_slug)
 
-    for number, (section, problem) in enumerate(identifiers, start=1):
-        sgf_path = repository_root / "problems/200-basic-go-problems" / section / f"{problem}.sgf"
+
+def collection_problem_id(slug: str, source_id: str) -> str:
+    return f"{slug}:{source_id}"
+
+
+def load_collections(repository_root: Path) -> list[Collection]:
+    collections = [
+        _load_collection(tex_path, repository_root)
+        for tex_path in (repository_root / "books").glob("*.tex")
+        if tex_path.name != "header.tex"
+    ]
+    return sorted(
+        collections, key=lambda collection: (collection.rank, collection.title, collection.slug)
+    )
+
+
+def _load_collection(tex_path: Path, repository_root: Path) -> Collection:
+    source = tex_path.read_text(encoding="utf-8")
+    slug = tex_path.stem
+    category = _required_tex_value(source, r"^%([a-z]+)\s*$", "category")
+    title = _display_tex_value(_required_tex_value(source, r"^\\def\\entitle\{(.+)\}$", "title"))
+    level = _display_tex_value(_required_tex_value(source, r"^\\def\\level\{(.+)\}$", "level"))
+    rank = _level_rank(level)
+    source_slug = source_collection_slug(slug)
+    problems: list[Problem] = []
+    uncommented_source = "\n".join(line.split("%", maxsplit=1)[0] for line in source.splitlines())
+
+    for number, (section, problem) in enumerate(
+        re.findall(r"\\p\{(\d+)\}\{(\d+)\}", uncommented_source), start=1
+    ):
+        sgf_path = repository_root / "problems" / source_slug / section / f"{problem}.sgf"
         if not sgf_path.is_file():
             raise ValueError(f"Missing SGF: {sgf_path}")
-        black, white = parse_initial_stones(sgf_path.read_text())
-        problems.append(Problem(number, f"{section}/{problem}", black, white))
+        try:
+            black, white = parse_initial_stones(sgf_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise ValueError(f"Invalid SGF: {sgf_path}") from error
+        source_id = f"{section}/{problem}"
+        problems.append(Problem(number, collection_problem_id(slug, source_id), black, white))
 
-    return problems
+    return Collection(slug, title, category, level, rank, problems)
+
+
+def _required_tex_value(source: str, pattern: str, name: str) -> str:
+    match = re.search(pattern, source, flags=re.MULTILINE)
+    if match is None:
+        raise ValueError(f"Missing collection {name}")
+    return match.group(1)
+
+
+def _display_tex_value(value: str) -> str:
+    return value.replace("~", " ").replace(r"\&", "&").replace(r"\=u", "u")
+
+
+def _level_rank(level: str) -> int:
+    match = re.fullmatch(r"(\d+) (kyu|dan)", level)
+    if match is None:
+        raise ValueError(f"Invalid collection level: {level}")
+    value = int(match.group(1))
+    return 20 - value if match.group(2) == "kyu" else 20 + value
 
 
 class ReaderRequestHandler(SimpleHTTPRequestHandler):
-    collection: list[Problem]
+    collections: list[Collection]
     progress_store: ProgressStore
 
     def do_GET(self) -> None:
         request = urlsplit(self.path)
-        if request.path == "/api/collection":
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    "title": "200 Basic Go Problems",
-                    "problems": [
-                        {
-                            "number": problem.number,
-                            "id": problem.problem_id,
-                            "black": problem.black,
-                            "white": problem.white,
-                        }
-                        for problem in self.collection
-                    ],
-                },
-            )
+        if request.path == "/api/collections":
+            self._send_json(HTTPStatus.OK, self._catalog())
+            return
+        if request.path.startswith("/api/collections/"):
+            self._get_collection(request.path.removeprefix("/api/collections/"))
             return
         if request.path == "/api/progress":
             self._get_progress(parse_qs(request.query))
@@ -239,6 +328,41 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
             return
         super().do_GET()
+
+    def _catalog(self) -> list[dict[str, str | int]]:
+        return [
+            {
+                "slug": collection.slug,
+                "title": collection.title,
+                "category": collection.category,
+                "level": collection.level,
+                "rank": collection.rank,
+                "problem_count": len(collection.problems),
+            }
+            for collection in self.collections
+        ]
+
+    def _get_collection(self, slug: str) -> None:
+        collection = next((item for item in self.collections if item.slug == slug), None)
+        if collection is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown collection")
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "slug": collection.slug,
+                "title": collection.title,
+                "problems": [
+                    {
+                        "number": problem.number,
+                        "id": problem.problem_id,
+                        "black": problem.black,
+                        "white": problem.white,
+                    }
+                    for problem in collection.problems
+                ],
+            },
+        )
 
     def do_PUT(self) -> None:
         if urlsplit(self.path).path != "/api/progress":
@@ -302,7 +426,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json(status, {"error": message})
 
-    def _send_json(self, status: HTTPStatus, body: dict[str, object]) -> None:
+    def _send_json(self, status: HTTPStatus, body: object) -> None:
         encoded_body = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -317,15 +441,18 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> ThreadingHTTPServer:
-    collection = load_collection(repository_root)
-    progress_store = ProgressStore(progress_path, {problem.problem_id for problem in collection})
+    collections = load_collections(repository_root)
+    progress_store = ProgressStore(
+        progress_path,
+        {problem.problem_id for collection in collections for problem in collection.problems},
+    )
     static_directory = Path(__file__).parent / "static"
 
     class ConfiguredReaderRequestHandler(ReaderRequestHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
             super().__init__(*args, directory=static_directory, **kwargs)
 
-    ConfiguredReaderRequestHandler.collection = collection
+    ConfiguredReaderRequestHandler.collections = collections
     ConfiguredReaderRequestHandler.progress_store = progress_store
     return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)
 

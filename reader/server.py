@@ -199,83 +199,102 @@ class ProgressStore:
 
 
 def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
-    _validate_closed_sgf_game_tree(source)
+    root_properties = _parse_sgf_root_properties(source)
     stones: dict[str, list[str]] = {"AB": [], "AW": []}
 
-    def read_value(start: int) -> tuple[str, int]:
-        value: list[str] = []
-        index = start + 1
-        while index < len(source):
-            character = source[index]
-            if character == "\\" and index + 1 < len(source):
-                value.append(source[index + 1])
-                index += 2
-                continue
-            if character == "]":
-                return "".join(value), index + 1
-            value.append(character)
-            index += 1
-        raise ValueError("Unterminated SGF property value")
-
-    index = source.find("(")
-    if index == -1:
-        raise ValueError("Missing SGF game tree")
-    index += 1
-    while index < len(source) and source[index].isspace():
-        index += 1
-    if index == len(source) or source[index] != ";":
-        raise ValueError("Missing SGF root node")
-    index += 1
-
-    while index < len(source):
-        while index < len(source) and source[index].isspace():
-            index += 1
-        if index == len(source) or source[index] in ";()":
-            break
-        property_start = index
-        while index < len(source) and source[index].isupper():
-            index += 1
-        property_name = source[property_start:index]
-        if not property_name or index == len(source) or source[index] != "[":
-            raise ValueError("Invalid SGF root property")
-        while index < len(source) and source[index] == "[":
-            coordinate, index = read_value(index)
-            if property_name not in stones:
-                continue
-            if not re.fullmatch(r"[a-s]{2}", coordinate):
-                raise ValueError(f"Invalid SGF coordinate: {coordinate}")
-            stones[property_name].append(coordinate)
+    for property_name, coordinates in stones.items():
+        coordinates.extend(root_properties.get(property_name, []))
 
     return stones["AB"], stones["AW"]
 
 
-def _validate_closed_sgf_game_tree(source: str) -> None:
-    depth = 0
-    in_property_value = False
+def _parse_sgf_root_properties(source: str) -> dict[str, list[str]]:
     index = 0
-    while index < len(source):
-        character = source[index]
-        if in_property_value:
-            if character == "\\" and index + 1 < len(source):
+
+    def skip_whitespace() -> None:
+        nonlocal index
+        while index < len(source) and source[index].isspace():
+            index += 1
+
+    def read_value() -> str:
+        nonlocal index
+        value: list[str] = []
+        index += 1
+        while index < len(source):
+            character = source[index]
+            if character == "\\":
+                if index + 1 == len(source):
+                    raise ValueError("Invalid SGF escape")
+                value.append(source[index + 1])
                 index += 2
                 continue
             if character == "]":
-                in_property_value = False
+                index += 1
+                return "".join(value)
+            value.append(character)
             index += 1
-            continue
-        if character == "[":
-            in_property_value = True
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            if depth < 0:
-                raise ValueError("Invalid SGF game tree")
-        index += 1
-    if in_property_value:
         raise ValueError("Unterminated SGF property value")
-    if depth != 0:
-        raise ValueError("Missing SGF closing game tree")
+
+    def validate_coordinates(property_name: str, values: list[str]) -> None:
+        if property_name not in {"AB", "AW", "AE", "B", "W"}:
+            return
+        for value in values:
+            if property_name in {"B", "W"} and value in {"", "tt"}:
+                continue
+            if not re.fullmatch(r"[a-s]{2}", value):
+                raise ValueError(f"Invalid SGF coordinate: {value}")
+
+    def parse_node() -> dict[str, list[str]]:
+        nonlocal index
+        index += 1
+        properties: dict[str, list[str]] = {}
+        while True:
+            skip_whitespace()
+            if index == len(source) or source[index] in ";()":
+                return properties
+            if not source[index].isupper():
+                raise ValueError("Invalid SGF property identifier")
+            property_start = index
+            while index < len(source) and source[index].isupper():
+                index += 1
+            property_name = source[property_start:index]
+            skip_whitespace()
+            if index == len(source) or source[index] != "[":
+                raise ValueError("Missing SGF property value")
+            values: list[str] = []
+            while index < len(source) and source[index] == "[":
+                values.append(read_value())
+                skip_whitespace()
+            validate_coordinates(property_name, values)
+            properties.setdefault(property_name, []).extend(values)
+
+    def parse_game_tree() -> dict[str, list[str]]:
+        nonlocal index
+        if index == len(source) or source[index] != "(":
+            raise ValueError("Missing SGF game tree")
+        index += 1
+        skip_whitespace()
+        if index == len(source) or source[index] != ";":
+            raise ValueError("Missing SGF root node")
+        root_properties = parse_node()
+        skip_whitespace()
+        while index < len(source) and source[index] == ";":
+            parse_node()
+            skip_whitespace()
+        while index < len(source) and source[index] == "(":
+            parse_game_tree()
+            skip_whitespace()
+        if index == len(source) or source[index] != ")":
+            raise ValueError("Missing SGF closing game tree")
+        index += 1
+        return root_properties
+
+    skip_whitespace()
+    root_properties = parse_game_tree()
+    skip_whitespace()
+    if index != len(source):
+        raise ValueError("Trailing content after SGF game tree")
+    return root_properties
 
 
 def source_collection_slug(booklet_slug: str) -> str:

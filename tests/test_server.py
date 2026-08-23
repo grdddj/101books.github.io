@@ -72,7 +72,9 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(collection_problem_id("beginner", "1/2", 3), "beginner:1/2@3")
 
     def make_fixture_collection(
-        self, tex: str = "\\p{24176}{174140}%\n\\p{24176}{174139}%"
+        self,
+        tex: str = "\\p{24176}{174140}%\n\\p{24176}{174139}%",
+        first_sgf: str = "(;AB[aa]AW[bb];B[cc];W[dd])",
     ) -> Path:
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
@@ -91,7 +93,7 @@ class CollectionTests(unittest.TestCase):
 
         problem_directory = fixture_root / "problems/200-basic-go-problems/24176"
         problem_directory.mkdir(parents=True)
-        (problem_directory / "174140.sgf").write_text("(;AB[aa]AW[bb];B[cc];W[dd])")
+        (problem_directory / "174140.sgf").write_text(first_sgf)
         (problem_directory / "174139.sgf").write_text("(;AB[cc]AW[dd];B[ee];W[ff])")
 
         return fixture_root
@@ -116,6 +118,17 @@ class CollectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Missing SGF"):
             load_collections(fixture_root)
+
+    def test_load_collections_rejects_malformed_child_syntax_and_trailing_content(self) -> None:
+        for source in ("(;AB[aa];B[x])", "(;AB[aa];b[cc])", "(;AB[aa]) trailing"):
+            with self.subTest(source=source):
+                fixture_root = self.make_fixture_collection(
+                    tex=r"\p{24176}{174140}%",
+                    first_sgf=source,
+                )
+
+                with self.assertRaisesRegex(ValueError, "Invalid SGF"):
+                    load_collections(fixture_root)
 
     def test_parse_initial_stones_ignores_comment_text_and_reads_multiple_values(
         self,

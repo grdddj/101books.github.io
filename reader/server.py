@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import re
@@ -87,8 +88,11 @@ class ProgressStore:
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
             raise StorageCorruptionError("Progress storage is corrupted") from error
 
-        if self._migrate_legacy_200_basic_records(data):
-            self._write(data)
+        proposed_data = copy.deepcopy(data)
+        if self._migrate_legacy_200_basic_records(proposed_data):
+            self._validate_data(proposed_data)
+            self._write(proposed_data)
+            return proposed_data
         self._validate_data(data)
         return data
 
@@ -101,9 +105,9 @@ class ProgressStore:
 
         prefix = "200-basic-go-problems:"
         legacy_ids = {
-            problem_id.removeprefix(prefix)
+            problem_id.removeprefix(prefix).removesuffix("@1")
             for problem_id in self.problem_ids
-            if problem_id.startswith(prefix)
+            if problem_id.startswith(prefix) and problem_id.endswith("@1")
         }
         migrated = False
         for user_data in users.values():
@@ -119,7 +123,7 @@ class ProgressStore:
                     continue
                 if problem_id not in legacy_ids:
                     raise StorageCorruptionError("Progress storage is corrupted")
-                namespaced_id = collection_problem_id("200-basic-go-problems", problem_id)
+                namespaced_id = collection_problem_id("200-basic-go-problems", problem_id, 1)
                 if namespaced_id in problems:
                     raise StorageCorruptionError("Progress storage is corrupted")
                 self._validate_record_data(problems[problem_id])
@@ -195,6 +199,7 @@ class ProgressStore:
 
 
 def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
+    _validate_closed_sgf_game_tree(source)
     stones: dict[str, list[str]] = {"AB": [], "AW": []}
 
     def read_value(start: int) -> tuple[str, int]:
@@ -244,12 +249,41 @@ def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
     return stones["AB"], stones["AW"]
 
 
+def _validate_closed_sgf_game_tree(source: str) -> None:
+    depth = 0
+    in_property_value = False
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if in_property_value:
+            if character == "\\" and index + 1 < len(source):
+                index += 2
+                continue
+            if character == "]":
+                in_property_value = False
+            index += 1
+            continue
+        if character == "[":
+            in_property_value = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Invalid SGF game tree")
+        index += 1
+    if in_property_value:
+        raise ValueError("Unterminated SGF property value")
+    if depth != 0:
+        raise ValueError("Missing SGF closing game tree")
+
+
 def source_collection_slug(booklet_slug: str) -> str:
     return re.sub(r"-part-\d+$", "", booklet_slug)
 
 
-def collection_problem_id(slug: str, source_id: str) -> str:
-    return f"{slug}:{source_id}"
+def collection_problem_id(slug: str, source_id: str, occurrence: int) -> str:
+    return f"{slug}:{source_id}@{occurrence}"
 
 
 def load_collections(repository_root: Path) -> list[Collection]:
@@ -272,6 +306,7 @@ def _load_collection(tex_path: Path, repository_root: Path) -> Collection:
     rank = _level_rank(level)
     source_slug = source_collection_slug(slug)
     problems: list[Problem] = []
+    source_occurrences: dict[str, int] = {}
     uncommented_source = "\n".join(line.split("%", maxsplit=1)[0] for line in source.splitlines())
 
     for number, (section, problem) in enumerate(
@@ -285,7 +320,11 @@ def _load_collection(tex_path: Path, repository_root: Path) -> Collection:
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise ValueError(f"Invalid SGF: {sgf_path}") from error
         source_id = f"{section}/{problem}"
-        problems.append(Problem(number, collection_problem_id(slug, source_id), black, white))
+        occurrence = source_occurrences.get(source_id, 0) + 1
+        source_occurrences[source_id] = occurrence
+        problems.append(
+            Problem(number, collection_problem_id(slug, source_id, occurrence), black, white)
+        )
 
     return Collection(slug, title, category, level, rank, problems)
 
@@ -315,6 +354,9 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         request = urlsplit(self.path)
+        if request.path == "/api/collection":
+            self._get_collection("200-basic-go-problems")
+            return
         if request.path == "/api/collections":
             self._send_json(HTTPStatus.OK, self._catalog())
             return
@@ -347,6 +389,9 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         if collection is None:
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown collection")
             return
+        self._send_collection(collection)
+
+    def _send_collection(self, collection: Collection) -> None:
         self._send_json(
             HTTPStatus.OK,
             {

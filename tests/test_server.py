@@ -32,6 +32,7 @@ class CollectionTests(unittest.TestCase):
             "\\def\\level{20 ky\\=u}\n"
             "\\def\\problems{%\n"
             "\\p{1}{2}%\n"
+            "\\p{1}{2}%\n"
             "}\n"
         )
         (books_directory / "advanced-part-1.tex").write_text(
@@ -58,13 +59,17 @@ class CollectionTests(unittest.TestCase):
         )
         self.assertEqual(collections[0].category, "tsumego")
         self.assertEqual(collections[0].level, "20 kyu")
+        self.assertEqual(
+            [problem.problem_id for problem in collections[0].problems],
+            ["beginner:1/2@1", "beginner:1/2@2"],
+        )
         self.assertEqual(collections[1].rank, 21)
-        self.assertEqual(collections[1].problems[0].problem_id, "advanced-part-1:7/42")
+        self.assertEqual(collections[1].problems[0].problem_id, "advanced-part-1:7/42@1")
 
     def test_source_collection_slug_removes_only_a_trailing_part_number(self) -> None:
         self.assertEqual(source_collection_slug("advanced-part-1"), "advanced")
         self.assertEqual(source_collection_slug("part-1-reference"), "part-1-reference")
-        self.assertEqual(collection_problem_id("beginner", "1/2"), "beginner:1/2")
+        self.assertEqual(collection_problem_id("beginner", "1/2", 3), "beginner:1/2@3")
 
     def make_fixture_collection(
         self, tex: str = "\\p{24176}{174140}%\n\\p{24176}{174139}%"
@@ -99,8 +104,8 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(
             [(problem.number, problem.problem_id) for problem in problems],
             [
-                (1, "200-basic-go-problems:24176/174140"),
-                (2, "200-basic-go-problems:24176/174139"),
+                (1, "200-basic-go-problems:24176/174140@1"),
+                (2, "200-basic-go-problems:24176/174139@1"),
             ],
         )
         self.assertEqual(problems[0].black, ["aa"])
@@ -140,10 +145,14 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(black, ["aa"])
         self.assertEqual(white, [])
 
+    def test_parse_initial_stones_rejects_missing_closing_game_tree(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Missing SGF closing game tree"):
+            parse_initial_stones("(;AB[aa]")
+
 
 class ProgressStoreTests(unittest.TestCase):
-    problem_id = "200-basic-go-problems:24176/174139"
-    second_problem_id = "200-basic-go-problems:24176/174140"
+    problem_id = "200-basic-go-problems:24176/174139@1"
+    second_problem_id = "200-basic-go-problems:24176/174140@1"
 
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
@@ -170,11 +179,11 @@ class ProgressStoreTests(unittest.TestCase):
         path.write_text(
             json.dumps({"users": {"Ada": {"problems": {"24176/174139": legacy_record}}}})
         )
-        store = ProgressStore(path, {"200-basic-go-problems:24176/174139"})
+        store = ProgressStore(path, {self.problem_id})
 
         result = store.get_user("Ada")
 
-        namespaced_id = "200-basic-go-problems:24176/174139"
+        namespaced_id = "200-basic-go-problems:24176/174139@1"
         self.assertEqual(result, {namespaced_id: legacy_record})
         self.assertNotIn("24176/174139", json.loads(path.read_text())["users"]["Ada"]["problems"])
 
@@ -194,7 +203,7 @@ class ProgressStoreTests(unittest.TestCase):
                 }
             )
         )
-        store = ProgressStore(path, {"200-basic-go-problems:24176/174139"})
+        store = ProgressStore(path, {self.problem_id})
 
         with self.assertRaises(StorageCorruptionError):
             store.get_user("Ada")
@@ -212,9 +221,64 @@ class ProgressStoreTests(unittest.TestCase):
             store.get_user("Ada")
 
         self.assertEqual(
-            json.loads(path.read_text())["users"]["Ada"]["problems"],
-            {"24176/174139": legacy_record},
+            path.read_text(),
+            json.dumps({"users": {"Ada": {"problems": {"24176/174139": legacy_record}}}}),
         )
+
+    def test_progress_store_leaves_storage_unchanged_when_migration_proposal_is_invalid(
+        self,
+    ) -> None:
+        path = self.root / "reader-data/progress.json"
+        document = {
+            "users": {
+                "Ada": {
+                    "problems": {
+                        "24176/174139": {
+                            "status": "solved",
+                            "updated_at": "2026-08-23T12:00:00Z",
+                        },
+                        "unknown:1/2@1": {
+                            "status": "solved",
+                            "updated_at": "2026-08-23T12:00:00Z",
+                        },
+                    }
+                }
+            }
+        }
+        original_bytes = json.dumps(document, indent=2).encode()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original_bytes)
+        store = ProgressStore(path, {self.problem_id})
+
+        with self.assertRaises(StorageCorruptionError):
+            store.get_user("Ada")
+
+        self.assertEqual(path.read_bytes(), original_bytes)
+
+    def test_progress_store_leaves_storage_unchanged_for_a_malformed_other_user(self) -> None:
+        path = self.root / "reader-data/progress.json"
+        document = {
+            "users": {
+                "Ada": {
+                    "problems": {
+                        "24176/174139": {
+                            "status": "solved",
+                            "updated_at": "2026-08-23T12:00:00Z",
+                        }
+                    }
+                },
+                "Bert": {"problems": []},
+            }
+        }
+        original_bytes = json.dumps(document, indent=2).encode()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original_bytes)
+        store = ProgressStore(path, {self.problem_id})
+
+        with self.assertRaises(StorageCorruptionError):
+            store.get_user("Ada")
+
+        self.assertEqual(path.read_bytes(), original_bytes)
 
     def test_progress_store_rejects_invalid_status_and_unknown_problem(self) -> None:
         store = ProgressStore(self.root / "progress.json", {self.problem_id})
@@ -313,7 +377,7 @@ class ProgressStoreTests(unittest.TestCase):
                 "users": {
                     "Ada": {
                         "problems": {
-                            "200-basic-go-problems:24176/174139": {
+                            "200-basic-go-problems:24176/174139@1": {
                                 "status": "unseen",
                                 "updated_at": "2026-08-23T12:00:00Z",
                             }
@@ -325,7 +389,7 @@ class ProgressStoreTests(unittest.TestCase):
                 "users": {
                     "Ada": {
                         "problems": {
-                            "200-basic-go-problems:24176/174139": {
+                            "200-basic-go-problems:24176/174139@1": {
                                 "status": "solved",
                                 "updated_at": "not-a-timestamp",
                             }
@@ -374,8 +438,17 @@ class HttpApiTests(unittest.TestCase):
         self.assertIsInstance(response, dict)
         self.assertEqual(response["title"], "200 Basic Go Problems")
         self.assertEqual(response["slug"], "200-basic-go-problems")
-        self.assertEqual(response["problems"][0]["id"], "200-basic-go-problems:24176/174140")
+        self.assertEqual(response["problems"][0]["id"], "200-basic-go-problems:24176/174140@1")
         self.assertNotIn("moves", response["problems"][0])
+
+    def test_legacy_collection_endpoint_returns_initial_positions_only(self) -> None:
+        response = self.get_json("/api/collection")
+
+        self.assertIsInstance(response, dict)
+        problem = response["problems"][0]
+        self.assertEqual(problem["id"], "200-basic-go-problems:24176/174140@1")
+        self.assertNotIn("moves", problem)
+        self.assertNotIn("solution", problem)
 
     def test_collection_endpoint_returns_structured_not_found_for_unknown_slug(self) -> None:
         status, response = self.request_json("/api/collections/missing")
@@ -388,7 +461,7 @@ class HttpApiTests(unittest.TestCase):
             "/api/progress",
             {
                 "user": "Ada",
-                "problem_id": "200-basic-go-problems:24176/174140",
+                "problem_id": "200-basic-go-problems:24176/174140@1",
                 "status": "revisit",
             },
         )
@@ -396,7 +469,7 @@ class HttpApiTests(unittest.TestCase):
         response = self.get_json("/api/progress?user=Ada")
 
         self.assertEqual(
-            response["problems"]["200-basic-go-problems:24176/174140"]["status"], "revisit"
+            response["problems"]["200-basic-go-problems:24176/174140@1"]["status"], "revisit"
         )
 
     def test_api_returns_structured_client_errors(self) -> None:
@@ -442,7 +515,7 @@ class HttpApiTests(unittest.TestCase):
             data=json.dumps(
                 {
                     "user": "Ada",
-                    "problem_id": "200-basic-go-problems:24176/174140",
+                    "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved",
                 }
             ).encode(),
@@ -471,7 +544,7 @@ class HttpApiTests(unittest.TestCase):
                     "users": {
                         "Ada": {
                             "problems": {
-                                "200-basic-go-problems:24176/174140": {
+                                "200-basic-go-problems:24176/174140@1": {
                                     "status": "unseen",
                                     "updated_at": "2026-08-23T12:00:00Z",
                                 }
@@ -488,7 +561,7 @@ class HttpApiTests(unittest.TestCase):
             data=json.dumps(
                 {
                     "user": "Ada",
-                    "problem_id": "200-basic-go-problems:24176/174140",
+                    "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved",
                 }
             ).encode(),

@@ -6,6 +6,9 @@ import os
 import re
 import tempfile
 import threading
+from _thread import LockType
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -40,6 +43,12 @@ class StorageCorruptionError(Exception):
     """Raised when the persisted progress document does not match its schema."""
 
 
+@dataclass
+class _UserLockEntry:
+    lock: LockType
+    references: int = 0
+
+
 class ProgressStore:
     _STATUSES: ClassVar[frozenset[str]] = frozenset({"unseen", "solved", "revisit"})
     _MIGRATION_VERSION: ClassVar[int] = 1
@@ -50,13 +59,13 @@ class ProgressStore:
         self.users_directory: Path = self.data_directory / "users"
         self.migration_marker_path: Path = self.data_directory / "progress-migration.json"
         self.problem_ids: set[str] = problem_ids
-        self._user_locks: dict[str, threading.Lock] = {}
-        self._user_locks_guard: threading.Lock = threading.Lock()
+        self._user_locks: dict[str, _UserLockEntry] = {}
+        self._user_locks_guard: LockType = threading.Lock()
         self._migrate_legacy_store()
 
     def get_user(self, user: str) -> dict[str, dict[str, str]]:
         user = self._validate_user(user)
-        with self._lock_for_user(user):
+        with self._locked_user(user):
             data = self._read_user_document(user)
             problems = data["problems"]
             if not isinstance(problems, dict):
@@ -70,7 +79,7 @@ class ProgressStore:
         if problem_id not in self.problem_ids:
             raise ValueError(f"Unknown problem: {problem_id}")
 
-        with self._lock_for_user(user):
+        with self._locked_user(user):
             data = self._read_user_document(user)
             problems = data["problems"]
             events = data["events"]
@@ -92,7 +101,7 @@ class ProgressStore:
         user = self._validate_user(user)
         if not 1 <= limit <= 100:
             raise ValueError("Activity limit must be between 1 and 100")
-        with self._lock_for_user(user):
+        with self._locked_user(user):
             data = self._read_user_document(user)
             events = data["events"]
             if not isinstance(events, list):
@@ -105,9 +114,22 @@ class ProgressStore:
             raise ValueError("Invalid user")
         return normalized
 
-    def _lock_for_user(self, user: str) -> threading.Lock:
+    @contextmanager
+    def _locked_user(self, user: str) -> Generator[None, None, None]:
         with self._user_locks_guard:
-            return self._user_locks.setdefault(user, threading.Lock())
+            entry = self._user_locks.get(user)
+            if entry is None:
+                entry = _UserLockEntry(threading.Lock())
+                self._user_locks[user] = entry
+            entry.references += 1
+        try:
+            with entry.lock:
+                yield
+        finally:
+            with self._user_locks_guard:
+                entry.references -= 1
+                if entry.references == 0:
+                    del self._user_locks[user]
 
     def _user_path(self, user: str) -> Path:
         digest = hashlib.sha256(user.encode("utf-8")).hexdigest()
@@ -821,7 +843,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
             return
 
-        self._send_json(HTTPStatus.OK, {"problems": problems})
+        self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
 
     def _get_progress(self, query: dict[str, list[str]]) -> None:
         users = query.get("user", [])
@@ -836,7 +858,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         except (OSError, StorageCorruptionError):
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
             return
-        self._send_json(HTTPStatus.OK, {"problems": problems})
+        self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
 
     def _get_activity(self, query: dict[str, list[str]]) -> None:
         if not set(query) <= {"user", "limit"}:
@@ -873,7 +895,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
                     "problem_number": problem_number,
                 }
             )
-        self._send_json(HTTPStatus.OK, {"events": enriched_events})
+        self._send_json(HTTPStatus.OK, {"events": enriched_events}, cache_control="no-store")
 
     @staticmethod
     def _parse_activity_limit(value: str) -> int:
@@ -899,11 +921,15 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json(status, {"error": message})
 
-    def _send_json(self, status: HTTPStatus, body: object) -> None:
+    def _send_json(
+        self, status: HTTPStatus, body: object, *, cache_control: str | None = None
+    ) -> None:
         encoded_body = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded_body)))
+        if cache_control is not None:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         if self.send_response_body:
             self.wfile.write(encoded_body)

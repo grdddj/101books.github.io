@@ -242,6 +242,14 @@ class ProgressStoreTests(unittest.TestCase):
 
         self.assertEqual([event["status"] for event in events], ["solved", "revisit"])
 
+    def test_arbitrary_user_reads_release_their_lock_entries(self) -> None:
+        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+
+        for index in range(1_000):
+            self.assertEqual(store.get_user(f"Reader {index}"), {})
+
+        self.assertEqual(store._user_locks, {})
+
     def test_progress_store_unseen_removes_status_without_recording_an_event(self) -> None:
         store = ProgressStore(self.root / "progress.json", {self.problem_id})
         store.set_status("Ada", self.problem_id, "solved")
@@ -321,6 +329,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertFalse(second_update.is_alive())
         self.assertTrue(second_update_done.is_set())
         self.assertEqual(set(store.get_user("Ada")), {self.problem_id, self.second_problem_id})
+        self.assertEqual(store._user_locks, {})
 
     def test_progress_store_does_not_block_different_users(self) -> None:
         path = self.root / "progress.json"
@@ -741,6 +750,26 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(
             response["problems"]["200-basic-go-problems:24176/174140@1"]["status"], "revisit"
         )
+
+    def test_user_specific_responses_disable_caching(self) -> None:
+        for path in ("/api/progress?user=Ada", "/api/activity?user=Ada"):
+            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+        request = Request(
+            f"{self.base_url}/api/progress",
+            data=json.dumps(
+                {
+                    "user": "Ada",
+                    "problem_id": "200-basic-go-problems:24176/174140@1",
+                    "status": "solved",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
 
     def test_activity_endpoint_returns_limited_newest_events_with_collection_context(self) -> None:
         for status in ("solved", "revisit", "solved"):

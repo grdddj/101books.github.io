@@ -4,4 +4,3 @@
 reader-data/
 __pycache__/
 *.py[cod]
-uv.lock

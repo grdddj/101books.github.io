@@ -112,10 +112,37 @@ migration resumes without duplicating events; an existing target, missing comple
 target, corrupt source, or corrupt backup stops startup instead of overwriting or
 silently dropping progress.
 
-Back up all JSON application data in `/var/lib/tsumego`, including `users/`, the
-legacy backup, and the migration marker, and restore it with ownership retained
-by the `tsumego` service account. Exclude the reproducible `.venv` and `.cache`
-directories from backups.
+Back up all JSON application data before every upgrade. Stop the service so the
+set of per-user files is a consistent snapshot, exclude the reproducible `.venv`
+and `.cache` directories, and then start the service again:
+
+```bash
+sudo install -d -o root -g root -m 0750 /var/backups/tsumego
+backup=/var/backups/tsumego/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+sudo systemctl stop tsumego.service
+sudo tar --create --gzip --file "$backup" \
+  --directory /var/lib/tsumego --exclude=.venv --exclude=.cache .
+sudo systemctl start tsumego.service
+sudo tar --list --gzip --file "$backup" >/dev/null
+```
+
+The archive includes `users/`, the legacy backup, and the migration marker.
+When restoring it, stop the service first and retain ownership by the `tsumego`
+service account.
+
+To upgrade the checkout on its currently deployed branch, create and verify the
+backup above, then fast-forward the code, validate the committed lockfile, and
+restart and check the service:
+
+```bash
+cd /opt/101books.github.io
+git fetch --prune origin
+git pull --ff-only
+uv lock --check
+sudo systemctl restart tsumego.service
+curl --fail http://127.0.0.1:8123/tsumego/healthz
+curl --fail https://jirkuvserver.cz/tsumego/healthz
+```
 
 Production uses `uv run --frozen` so a stale or missing lockfile fails startup
 instead of changing the deployed dependency set.

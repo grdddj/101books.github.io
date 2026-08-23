@@ -22,9 +22,7 @@ class Problem:
 
 
 class ProgressStore:
-    _STATUSES: ClassVar[frozenset[str]] = frozenset(
-        {"unseen", "solved", "revisit"}
-    )
+    _STATUSES: ClassVar[frozenset[str]] = frozenset({"unseen", "solved", "revisit"})
 
     def __init__(self, path: Path, problem_ids: set[str]) -> None:
         self.path = path
@@ -37,9 +35,7 @@ class ProgressStore:
             data = self._read()
             return dict(data["users"].get(user, {}).get("problems", {}))
 
-    def set_status(
-        self, user: str, problem_id: str, status: str
-    ) -> dict[str, dict[str, str]]:
+    def set_status(self, user: str, problem_id: str, status: str) -> dict[str, dict[str, str]]:
         user = self._validate_user(user)
         if status not in self._STATUSES:
             raise ValueError(f"Invalid status: {status}")
@@ -56,9 +52,7 @@ class ProgressStore:
             else:
                 problems[problem_id] = {
                     "status": status,
-                    "updated_at": datetime.now(timezone.utc)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 }
             self._write(data)
             return dict(problems)
@@ -148,12 +142,7 @@ def load_collection(repository_root: Path) -> list[Problem]:
     problems: list[Problem] = []
 
     for number, (section, problem) in enumerate(identifiers, start=1):
-        sgf_path = (
-            repository_root
-            / "problems/200-basic-go-problems"
-            / section
-            / f"{problem}.sgf"
-        )
+        sgf_path = repository_root / "problems/200-basic-go-problems" / section / f"{problem}.sgf"
         if not sgf_path.is_file():
             raise ValueError(f"Missing SGF: {sgf_path}")
         black, white = parse_initial_stones(sgf_path.read_text())
@@ -202,8 +191,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", ""))
             payload = json.loads(self.rfile.read(content_length))
             if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str)
-                for key in ("user", "problem_id", "status")
+                isinstance(payload.get(key), str) for key in ("user", "problem_id", "status")
             ):
                 raise ValueError("Invalid progress payload")
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
@@ -269,9 +257,7 @@ def create_server(
     port: int = 0,
 ) -> ThreadingHTTPServer:
     collection = load_collection(repository_root)
-    progress_store = ProgressStore(
-        progress_path, {problem.problem_id for problem in collection}
-    )
+    progress_store = ProgressStore(progress_path, {problem.problem_id for problem in collection})
     static_directory = Path(__file__).parent / "static"
 
     class ConfiguredReaderRequestHandler(ReaderRequestHandler):
@@ -291,12 +277,8 @@ def main() -> None:
     arguments = parser.parse_args()
 
     repository_root = Path(__file__).resolve().parents[1]
-    progress_path = (
-        arguments.progress_file or repository_root / "reader-data/progress.json"
-    )
-    server = create_server(
-        repository_root, progress_path, arguments.host, arguments.port
-    )
+    progress_path = arguments.progress_file or repository_root / "reader-data/progress.json"
+    server = create_server(repository_root, progress_path, arguments.host, arguments.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

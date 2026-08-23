@@ -16,9 +16,7 @@ from reader.server import (
 
 
 class CollectionTests(unittest.TestCase):
-    def make_fixture_collection(
-        self, tex: str = r"\p{24176}{174140}%\p{24176}{174139}%"
-    ) -> Path:
+    def make_fixture_collection(self, tex: str = r"\p{24176}{174140}%\p{24176}{174139}%") -> Path:
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         fixture_root = Path(temporary_directory.name)
@@ -172,9 +170,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertFalse(first_update.is_alive())
         self.assertFalse(second_update.is_alive())
         self.assertTrue(second_update_done.is_set())
-        self.assertEqual(
-            set(store.get_user("Ada")), {"24176/174139", "24176/174140"}
-        )
+        self.assertEqual(set(store.get_user("Ada")), {"24176/174139", "24176/174140"})
 
 
 class HttpApiTests(unittest.TestCase):
@@ -262,9 +258,7 @@ class HttpApiTests(unittest.TestCase):
     def _make_fixture_collection(self) -> None:
         books_directory = self.root / "books"
         books_directory.mkdir()
-        (books_directory / "200-basic-go-problems.tex").write_text(
-            r"\p{24176}{174140}%"
-        )
+        (books_directory / "200-basic-go-problems.tex").write_text(r"\p{24176}{174140}%")
 
         problem_directory = self.root / "problems/200-basic-go-problems/24176"
         problem_directory.mkdir(parents=True)
@@ -292,9 +286,7 @@ class HttpApiTests(unittest.TestCase):
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, object]]:
-        request = Request(
-            f"{self.base_url}{path}", data=data, headers=headers or {}, method=method
-        )
+        request = Request(f"{self.base_url}{path}", data=data, headers=headers or {}, method=method)
         try:
             with urlopen(request) as response:
                 return response.status, json.loads(response.read())

@@ -223,8 +223,8 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
     assert.deepEqual(JSON.parse(match[1]), {
       panelOpened: true,
       visibleCatalog: [
-        "200 Basic Go Problems · 20 kyu · tsumego · 2 problems · Solved: 1 · Revisit: 0",
-        "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 · Revisit: 1",
+        "200 Basic Go Problems · 20 kyu · tsumego · 2 problems · Solved: 1 (50%) · Revisit: 0",
+        "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 (33.33333333333333%) · Revisit: 1",
       ],
       queuedWheelBlocked: true,
       focusEntered: true,

@@ -384,13 +384,67 @@ test("an invalid saved collection falls back to the first API-sorted catalog ent
   assert.deepEqual(
     elements
       .get("#collection-list")
-      .appended.map((item) => item.appended[0].textContent),
+      .appended.map((item) => item.appended[0].appended[0].textContent),
     [
-      "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 0 · Revisit: 0",
-      "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 0 · Revisit: 0",
+      "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 0 (0%) · Revisit: 0",
+      "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 0 (0%) · Revisit: 0",
     ],
   );
   assert.ok(catalog.every((item) => !("problems" in item) && !("moves" in item)));
+});
+
+test("the collection list shows progress states and solved percentages", async () => {
+  const { fetchImpl, catalog } = createCollectionFetch({
+    problems: {
+      "advanced:1@1": { status: "revisit" },
+      "partial:1@1": { status: "solved" },
+      "complete:1@1": { status: "solved" },
+      "complete:2@1": { status: "solved" },
+    },
+  });
+  catalog.push(
+    {
+      slug: "partial",
+      title: "Partial shapes",
+      category: "tesuji",
+      level: "10 kyu",
+      problem_count: 4,
+    },
+    {
+      slug: "complete",
+      title: "Complete shapes",
+      category: "fuseki",
+      level: "5 kyu",
+      problem_count: 2,
+    },
+  );
+  const { context, elements } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "basic",
+  });
+
+  await context.readerTestApi.startReader();
+
+  const options = elements
+    .get("#collection-list")
+    .appended.map((item) => item.appended[0]);
+  assert.equal(options[0].className, "collection-option");
+  assert.equal(options[1].className, "collection-option collection-option--started");
+  assert.equal(options[2].className, "collection-option collection-option--partial");
+  assert.equal(options[3].className, "collection-option collection-option--complete");
+  assert.equal(options[0].style["--collection-progress"], "0%");
+  assert.equal(options[1].style["--collection-progress"], "0%");
+  assert.equal(options[2].style["--collection-progress"], "25%");
+  assert.equal(options[3].style["--collection-progress"], "100%");
+  assert.match(options[0].appended[0].textContent, /Solved: 0 \(0%\)/);
+  assert.match(options[1].appended[0].textContent, /Solved: 0 \(0%\)/);
+  assert.match(options[2].appended[0].textContent, /Solved: 1 \(25%\)/);
+  assert.match(options[3].appended[0].textContent, /Solved: 2 \(100%\)/);
+  assert.match(appCss, /var\(--collection-progress\)/);
+  for (const state of ["started", "partial", "complete"]) {
+    assert.match(appCss, new RegExp(`\\.collection-option--${state}`));
+  }
 });
 
 test("selecting a collection persists it, pushes a shareable URL, closes the panel, and scopes progress to its namespace", async () => {

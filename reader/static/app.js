@@ -124,10 +124,23 @@ function renderCollectionList() {
   if (!collectionList) return;
   collectionButtons = catalog.map((item) => {
     const totals = getCatalogStatusTotals(item.slug);
+    const solvedPercentage = (totals.solved / item.problem_count) * 100;
+    const stateClass =
+      totals.solved === item.problem_count
+        ? "collection-option--complete"
+        : totals.solved > 0
+          ? "collection-option--partial"
+          : totals.revisit > 0
+            ? "collection-option--started"
+            : "";
     const option = document.createElement("button");
     option.type = "button";
-    option.className = "collection-option";
-    option.textContent = `${item.title} · ${item.level} · ${item.category} · ${item.problem_count} problems · Solved: ${totals.solved} · Revisit: ${totals.revisit}`;
+    option.className = ["collection-option", stateClass].filter(Boolean).join(" ");
+    option.style.setProperty("--collection-progress", `${solvedPercentage}%`);
+    const label = document.createElement("span");
+    label.className = "collection-option__label";
+    label.textContent = `${item.title} · ${item.level} · ${item.category} · ${item.problem_count} problems · Solved: ${totals.solved} (${solvedPercentage}%) · Revisit: ${totals.revisit}`;
+    option.append(label);
     option.setAttribute("data-collection-slug", item.slug);
     option.addEventListener("click", () => selectCollection(item.slug));
     const listItem = document.createElement("li");

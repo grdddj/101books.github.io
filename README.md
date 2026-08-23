@@ -16,10 +16,11 @@ uvx ruff format --check reader tests
 uvx ruff check reader tests
 ```
 
-Open `http://127.0.0.1:8000/` after starting the server. The reader asks for a
-display name once per browser and reopens the last booklet selected in that
-browser. Use **Change collection** to browse the API-sorted booklet catalog and
-switch collections. Progress is stored locally in `reader-data/progress.json`;
+Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
+be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
+restores the last booklet selected in that browser. The reader asks for a display
+name once per browser. Use **Change collection** to browse the API-sorted booklet
+catalog and switch collections. Progress is stored locally in `reader-data/progress.json`;
 this directory is intentionally ignored by Git. Several unauthenticated
 browser-local profiles can use the same local process, but the progress model
 is not a shared or network service.

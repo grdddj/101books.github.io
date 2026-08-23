@@ -24,13 +24,18 @@ deterministic order.
 `GET /api/collections` returns the catalog. `GET /api/collections/<slug>`
 returns that booklet's initial positions in its TeX-defined order. Existing
 progress routes continue to serve and update the active user's statuses, but
-all new problem IDs are namespaced as `<booklet-slug>:<section>/<problem>`.
-This avoids collisions between source identifiers from distinct collections.
+all new problem IDs are namespaced as
+`<booklet-slug>:<section>/<problem>@<occurrence>`, where occurrence is the
+one-based appearance of that source identifier within the booklet's TeX order.
+This avoids collisions between source identifiers from distinct collections
+and lets repeated appearances within a booklet retain independent progress.
 
 When a user first loads `200-basic-go-problems`, the progress store migrates
 that user's existing unnamespaced `section/problem` records to the namespaced
-form, retaining status and timestamp. Malformed, conflicting, or unrelated
-records remain storage errors rather than being silently reassigned.
+first-occurrence form, retaining status and timestamp. Migration preflights the
+entire persisted document and writes only after the migrated document validates;
+malformed, conflicting, or unrelated records remain storage errors without any
+partial rewrite.
 
 ## Reader experience
 
@@ -49,8 +54,9 @@ playable.
 ## Scope and verification
 
 Server tests cover TeX metadata parsing, source-directory derivation, level
-ordering, all-booklet SGF resolution, slug validation, namespaced progress,
-and migration. Frontend tests cover stored-booklet recovery, collection-panel
+ordering, all-booklet SGF resolution, strict malformed-SGF rejection, slug
+validation, occurrence-namespaced progress, and all-or-nothing migration.
+Frontend tests cover stored-booklet recovery, collection-panel
 selection, and reloading progress for the selected booklet. Browser checks
 confirm a level-sorted panel, selection change, and independent progress
 counts. README documents all-booklet support and the stable-ID/migration

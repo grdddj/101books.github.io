@@ -13,8 +13,8 @@
 - Scan every `books/*.tex` except `header.tex`; TeX `\p{section}{problem}` order remains canonical.
 - Derive the SGF source directory by removing a trailing `-part-N` from the booklet slug.
 - Order catalog entries from weakest kyu to strongest kyu, then 1 dan upward; break ties by title and slug.
-- New progress keys are exactly `<booklet-slug>:<section>/<problem>`; never use bare source IDs for new writes.
-- Migrate only valid legacy 200 Basic Go Problems IDs, preserving status/timestamp and rejecting ambiguous or malformed persisted data.
+- New progress keys are exactly `<booklet-slug>:<section>/<problem>@<occurrence>`; occurrence is one-based in that booklet's TeX order, and bare source IDs are never new writes.
+- Migrate only valid legacy 200 Basic Go Problems IDs to their first occurrence, preserving status/timestamp and rejecting malformed persisted data without a partial rewrite.
 - The browser saves only user name and selected booklet in localStorage; server progress remains `reader-data/progress.json`.
 - Keep the reader static: no SGF moves, solution data, stone placement, new dependencies, or public-service assumptions.
 
@@ -85,17 +85,18 @@ def source_collection_slug(booklet_slug: str) -> str:
     return re.sub(r"-part-\d+$", "", booklet_slug)
 
 
-def collection_problem_id(slug: str, source_id: str) -> str:
-    return f"{slug}:{source_id}"
+def collection_problem_id(slug: str, source_id: str, occurrence: int) -> str:
+    return f"{slug}:{source_id}@{occurrence}"
 ```
 
 Parse title/category/level from each TeX source; normalize kyu/dan to an
 integer rank where 20 kyu sorts before 1 kyu and 1 dan follows it. Load each
-ordered SGF under `problems/<source-root>/<section>/<id>.sgf`, prefix each
-`Problem.problem_id`, and fail startup on missing/invalid files. Give
-`ProgressStore` the complete namespaced ID set and a one-time migration method
-for valid 200 Basic legacy records; write migrated data atomically through the
-existing transaction.
+ordered SGF under `problems/<source-root>/<section>/<id>.sgf`, assign each
+appearance its occurrence suffix, and fail startup on missing/strictly invalid
+files. Give `ProgressStore` the complete namespaced ID set and a one-time
+migration method for valid 200 Basic legacy records. First construct and
+validate the complete migrated document, then atomically write it once; leave
+the source bytes untouched if any record is malformed.
 
 - [ ] **Step 4: Add catalog and collection endpoints**
 

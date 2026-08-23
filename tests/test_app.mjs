@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
 const appSource = await readFile(new URL("../reader/static/app.js", import.meta.url), "utf8");
+const appCss = await readFile(new URL("../reader/static/app.css", import.meta.url), "utf8");
 
 function createElement() {
   return {
@@ -168,6 +169,20 @@ test("board stones use grid positions relative to the crop", () => {
   assert.equal(board.style["--board-rows"], 3);
   assert.equal(blackStone.style.gridColumn, 2);
   assert.equal(blackStone.style.gridRow, 2);
+});
+
+test("rectangular crops set matching dimensions and keep grid intervals square", () => {
+  const { context, elements } = loadApp({ promptResult: "Ada" });
+
+  context.readerTestApi.renderBoard({ black: ["be", "hh"], white: [] });
+
+  const board = elements.get("#board");
+  assert.equal(board.style["--board-columns"], 9);
+  assert.equal(board.style["--board-rows"], 6);
+  assert.match(
+    appCss,
+    /aspect-ratio:\s*var\(--board-columns\)\s*\/\s*var\(--board-rows\);/,
+  );
 });
 
 test("successful status saves advance one problem without passing the final problem", async () => {

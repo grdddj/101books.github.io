@@ -79,7 +79,7 @@ h1 {
   grid-template-columns: repeat(var(--board-columns), minmax(0, 1fr));
   grid-template-rows: repeat(var(--board-rows), minmax(0, 1fr));
   width: min(100%, calc(100vh - 13rem), 42rem);
-  aspect-ratio: 1;
+  aspect-ratio: var(--board-columns) / var(--board-rows);
   overflow: hidden;
   border: 1px solid #735026;
   border-radius: 0.2rem;

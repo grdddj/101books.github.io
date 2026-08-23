@@ -53,19 +53,54 @@ function browserPage() {
         const result = document.querySelector("#browser-collections-result");
         try {
           await waitFor(() => !document.querySelector("#change-collection").disabled);
-          document.querySelector("#change-collection").click();
+          const changeButton = document.querySelector("#change-collection");
+          changeButton.focus();
+          changeButton.click();
           const panel = document.querySelector("#collection-panel");
           const options = [...document.querySelectorAll("[data-collection-slug]")];
           const visibleCatalog = options.map((option) => option.textContent);
           const panelOpened = !panel.hidden;
+          const dispatchKey = (key, shiftKey = false) => document.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, shiftKey }),
+          );
+          const focusEntered = document.activeElement === options[0];
+          dispatchKey("Tab");
+          const forwardTabTrapped = document.activeElement === options[1];
+          dispatchKey("Tab");
+          const forwardWrapTrapped = document.activeElement === document.querySelector("#close-collection-panel");
+          dispatchKey("Tab", true);
+          const backwardTabTrapped = document.activeElement === options[1];
+          const ordinalBeforeArrow = document.querySelector("#problem-ordinal").textContent;
+          dispatchKey("ArrowRight");
+          const readerBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeArrow;
+          document.querySelector("#app").dispatchEvent(
+            new WheelEvent("wheel", { bubbles: true, deltaY: 100 }),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          const wheelBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeArrow;
+          dispatchKey("Escape");
+          const escapeRestoredFocus = panel.hidden && document.activeElement === changeButton;
+          changeButton.click();
+          document.querySelector("#close-collection-panel").click();
+          const closeRestoredFocus = panel.hidden && document.activeElement === changeButton;
+          changeButton.click();
           options[1].click();
           await waitFor(() => document.querySelector("#collection-title").textContent === "Advanced shapes");
           result.textContent = JSON.stringify({
             panelOpened,
             visibleCatalog,
+            focusEntered,
+            forwardTabTrapped,
+            forwardWrapTrapped,
+            backwardTabTrapped,
+            readerBlocked,
+            wheelBlocked,
+            escapeRestoredFocus,
+            closeRestoredFocus,
             selectedTitle: document.querySelector("#collection-title").textContent,
             selectedCollection: localStorage.getItem("static-go-reader-collection"),
             progress: document.querySelector("#progress-summary").textContent,
+            selectionRestoredFocus: document.activeElement === changeButton,
           });
         } catch (error) {
           result.textContent = JSON.stringify({ error: error.message });
@@ -176,9 +211,18 @@ test("Chromium changes collections with catalog order and collection-scoped prog
         "Basic shapes · 20 kyu · tsumego · 2 problems · Solved: 1 · Revisit: 0",
         "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 · Revisit: 1",
       ],
+      focusEntered: true,
+      forwardTabTrapped: true,
+      forwardWrapTrapped: true,
+      backwardTabTrapped: true,
+      readerBlocked: true,
+      wheelBlocked: true,
+      escapeRestoredFocus: true,
+      closeRestoredFocus: true,
       selectedTitle: "Advanced shapes",
       selectedCollection: "advanced",
       progress: "Solved: 1 · Revisit: 1 · Total: 3",
+      selectionRestoredFocus: true,
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

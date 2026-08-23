@@ -6,7 +6,7 @@ import vm from "node:vm";
 const appSource = await readFile(new URL("../reader/static/app.js", import.meta.url), "utf8");
 const appCss = await readFile(new URL("../reader/static/app.css", import.meta.url), "utf8");
 
-function createElement() {
+function createElement(documentState) {
   return {
     addEventListener() {},
     appended: [],
@@ -17,6 +17,9 @@ function createElement() {
     classList: { toggle() {} },
     contains() {
       return false;
+    },
+    focus() {
+      documentState.activeElement = this;
     },
     replaceChildren(...children) {
       this.appended = children;
@@ -36,6 +39,7 @@ function createElement() {
 
 function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = null }) {
   const elements = new Map();
+  const documentState = { activeElement: null };
   const localStorage = new Map(
     [
       ["static-go-reader-user", savedName],
@@ -51,15 +55,18 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
     String,
     clearTimeout() {},
     document: {
+      get activeElement() {
+        return documentState.activeElement;
+      },
       addEventListener() {},
       createElement() {
-        return createElement();
+        return createElement(documentState);
       },
       createElementNS() {
-        return createElement();
+        return createElement(documentState);
       },
       querySelector(selector) {
-        if (!elements.has(selector)) elements.set(selector, createElement());
+        if (!elements.has(selector)) elements.set(selector, createElement(documentState));
         return elements.get(selector);
       },
     },
@@ -95,11 +102,13 @@ function loadApp({ fetchImpl, promptResult, savedName = null, savedCollection = 
     `
 globalThis.readerTestApi = {
   getBoardCrop: typeof getBoardCrop === "function" ? getBoardCrop : undefined,
+  handleKeydown: typeof handleKeydown === "function" ? handleKeydown : undefined,
   getCurrentIndex: () => currentIndex,
   getOrPromptUser,
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
+  openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -107,7 +116,7 @@ globalThis.readerTestApi = {
 };`,
   );
   vm.runInNewContext(sourceWithoutStartup, context, { filename: "app.js" });
-  return { context, elements, localStorage };
+  return { context, documentState, elements, localStorage };
 }
 
 function response(body) {
@@ -286,6 +295,44 @@ test("selecting a collection persists it, closes the panel, and scopes progress 
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
   assert.equal(elements.get("#progress-summary").textContent, "Solved: 1 · Revisit: 1 · Total: 3");
   assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
+
+test("the collection dialog traps focus, restores its invoker, and blocks reader arrows", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, documentState, elements } = loadApp({
+    fetchImpl,
+    promptResult: "Ada",
+    savedCollection: "basic",
+  });
+  await context.readerTestApi.startReader();
+  const changeButton = elements.get("#change-collection");
+  const closeButton = elements.get("#close-collection-panel");
+  const [firstOption, secondOption] = elements
+    .get("#collection-list")
+    .appended.map((item) => item.appended[0]);
+  changeButton.focus();
+
+  context.readerTestApi.openCollectionPanel({ currentTarget: changeButton });
+
+  assert.equal(documentState.activeElement, firstOption);
+  const forwardTab = { key: "Tab", preventDefault() { this.prevented = true; } };
+  context.readerTestApi.handleKeydown(forwardTab);
+  assert.equal(forwardTab.prevented, true);
+  assert.equal(documentState.activeElement, secondOption);
+
+  context.readerTestApi.handleKeydown({ key: "Tab", preventDefault() {} });
+  assert.equal(documentState.activeElement, closeButton);
+
+  const backwardTab = { key: "Tab", shiftKey: true, preventDefault() { this.prevented = true; } };
+  context.readerTestApi.handleKeydown(backwardTab);
+  assert.equal(backwardTab.prevented, true);
+  assert.equal(documentState.activeElement, secondOption);
+
+  context.readerTestApi.handleKeydown({ key: "ArrowRight", preventDefault() {} });
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+  context.readerTestApi.handleKeydown({ key: "Escape", preventDefault() {} });
+  assert.equal(elements.get("#collection-panel").hidden, true);
+  assert.equal(documentState.activeElement, changeButton);
 });
 
 test("invalid saved name is discarded before a normalized replacement is stored", () => {

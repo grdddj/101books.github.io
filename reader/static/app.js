@@ -24,6 +24,7 @@ let lastWheelNavigation = 0;
 let isSaving = false;
 let isLoadingCollection = false;
 let collectionButtons = [];
+let collectionPanelInvoker;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const WHEEL_THRESHOLD = 70;
@@ -264,6 +265,7 @@ function navigate(delta) {
 
 function handleWheel(event) {
   if (
+    isCollectionPanelOpen() ||
     event.defaultPrevented ||
     event.altKey ||
     event.ctrlKey ||
@@ -289,8 +291,19 @@ function handleWheel(event) {
 }
 
 function handleKeydown(event) {
-  if (event.key === "Escape" && collectionPanel && !collectionPanel.hidden) {
-    closeCollectionPanel();
+  if (isCollectionPanelOpen()) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCollectionPanel();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapCollectionPanelFocus(event);
+      return;
+    }
+    if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+    }
     return;
   }
   if (
@@ -345,16 +358,51 @@ function showError(error) {
   statusFeedback.textContent = error instanceof Error ? error.message : String(error);
 }
 
-function closeCollectionPanel() {
+function isCollectionPanelOpen() {
+  return Boolean(collectionPanel && !collectionPanel.hidden);
+}
+
+function getCollectionPanelFocusables() {
+  return [
+    closeCollectionPanelButton,
+    ...collectionButtons.map(({ option }) => option),
+  ].filter((button) => button && !button.disabled);
+}
+
+function focusCollectionPanel() {
+  (collectionButtons[0]?.option ?? closeCollectionPanelButton)?.focus();
+}
+
+function restoreCollectionPanelFocus() {
+  const invoker = collectionPanelInvoker;
+  collectionPanelInvoker = undefined;
+  invoker?.focus();
+}
+
+function trapCollectionPanelFocus(event) {
+  const focusables = getCollectionPanelFocusables();
+  if (focusables.length === 0) return;
+  const activeIndex = focusables.indexOf(document.activeElement);
+  const nextIndex = event.shiftKey
+    ? (activeIndex <= 0 ? focusables.length : activeIndex) - 1
+    : (activeIndex + 1) % focusables.length;
+  event.preventDefault();
+  focusables[nextIndex].focus();
+}
+
+function closeCollectionPanel({ restoreFocus = true } = {}) {
   if (!collectionPanel) return;
   collectionPanel.hidden = true;
   changeCollectionButton?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) restoreCollectionPanelFocus();
 }
 
-function openCollectionPanel() {
+function openCollectionPanel(event) {
   if (isSaving || isLoadingCollection || !collectionPanel) return;
+  collectionPanelInvoker = event?.currentTarget ?? document.activeElement;
   collectionPanel.hidden = false;
   changeCollectionButton?.setAttribute("aria-expanded", "true");
+  focusCollectionPanel();
 }
 
 async function loadActiveCollection(slug) {
@@ -370,7 +418,7 @@ async function loadActiveCollection(slug) {
 async function selectCollection(slug) {
   if (isSaving || isLoadingCollection) return;
   localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
-  closeCollectionPanel();
+  closeCollectionPanel({ restoreFocus: false });
   isLoadingCollection = true;
   setControlsDisabled(true);
   try {
@@ -380,7 +428,10 @@ async function selectCollection(slug) {
     showError(error);
   } finally {
     isLoadingCollection = false;
-    if (hasCollection()) renderReader();
+    if (hasCollection()) {
+      renderReader();
+      restoreCollectionPanelFocus();
+    }
   }
 }
 

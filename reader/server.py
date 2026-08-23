@@ -385,6 +385,8 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         if request.path.startswith("/api/"):
             self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
             return
+        if re.fullmatch(r"/collections/[^/]+", request.path):
+            self.path = "/"
         super().do_GET()
 
     def _catalog(self) -> list[dict[str, str | int]]:

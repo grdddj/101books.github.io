@@ -9,12 +9,15 @@ use by default and listens at `http://127.0.0.1:8000/`.
 From the repository root:
 
 ```bash
-uv run reader/server.py
-uv run python -m unittest -v
+python3 -m reader.server
+python3 -m unittest -v
 node --test tests/test_app.mjs tests/test_browser_grid.mjs tests/test_browser_collections.mjs
 uvx ruff format --check reader tests
 uvx ruff check reader tests
 ```
+
+The reader depends only on the standard library, so no virtual environment or
+dependency install is needed.
 
 Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
@@ -45,108 +48,83 @@ The reader intentionally does not allow stone placement or reveal solutions. Eac
 
 ## Deploy below `/tsumego/`
 
-The production process can listen only on loopback while Apache publishes it at
+The production process listens only on loopback while Apache publishes it at
 `https://jirkuvserver.cz/tsumego/`. The base path is part of the application
 configuration: it prefixes reader pages, static assets, API requests, direct
 collection links, and browser Back/Forward history. Root behavior remains the
 default when `--base-path` is omitted.
 
-1. Install `uv`, clone the repository to `/opt/101books.github.io`, and create a
-   dedicated service account and writable data directory:
+[`deploy/deploy.sh`](deploy/deploy.sh) performs the whole deployment and is safe
+to re-run:
 
-   ```bash
-   sudo useradd --system --home /var/lib/tsumego --shell /usr/sbin/nologin tsumego
-   sudo install -d -o tsumego -g tsumego -m 0750 /var/lib/tsumego
-   ```
+```bash
+sudo ./deploy/deploy.sh              # install or restart
+sudo ./deploy/deploy.sh --uninstall  # remove the service and Apache wiring
+```
 
-2. Copy [the systemd example](deploy/systemd/tsumego.service.example) to
-   `/etc/systemd/system/tsumego.service`. Adjust `WorkingDirectory` and the
-   service `PATH` if the checkout or `uv` installation differs. The unit keeps
-   uv's environment and cache below `/var/lib/tsumego`, so the service does not
-   need to write to the protected checkout. Then start it:
-
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now tsumego.service
-   curl --fail http://127.0.0.1:8123/tsumego/healthz
-   ```
-
-3. Enable Apache's proxy modules and add
-   [the Apache example](deploy/apache/tsumego.conf.example) inside the HTTPS
-   virtual host. Reload Apache after validating its configuration:
-
-   ```bash
-   sudo a2enmod proxy proxy_http
-   sudo apachectl configtest
-   sudo systemctl reload apache2
-   curl --fail https://jirkuvserver.cz/tsumego/healthz
-   ```
+It installs a `tsumego.service` unit that runs as the invoking user directly out
+of this checkout, waits for the local health endpoint, enables Apache's proxy
+modules, writes `/etc/apache2/conf-available/tsumego.conf`, includes it from the
+`*:443` virtual host (backing that file up first), validates the configuration
+before reloading, and finally checks the public URL. The reader depends only on
+the standard library, so the unit runs `python3` directly and no virtual
+environment is created.
 
 The equivalent process command is:
 
 ```bash
-uv run --frozen python -m reader.server \
+python3 -m reader.server \
   --host 127.0.0.1 \
   --port 8123 \
   --base-path /tsumego \
-  --data-dir /var/lib/tsumego
+  --data-dir reader-data
 ```
 
 `--base-path` accepts a path with or without its leading or trailing slash and
-normalizes it to one canonical prefix. `--data-dir` stores the progress data
-outside the checkout; it cannot be combined with the compatibility option
+normalizes it to one canonical prefix. `--data-dir` selects the progress
+directory; it cannot be combined with the compatibility option
 `--progress-file`.
 
-Before the first production start, install any existing shared `progress.json`
-with the service account's ownership and a private mode:
+Static files and the HTML shell are read from disk on every request, so editing
+`reader/static/` takes effect immediately. Changing `reader/server.py` needs a
+restart:
 
 ```bash
-sudo install -o tsumego -g tsumego -m 0600 \
-  /path/to/legacy/progress.json /var/lib/tsumego/progress.json
+sudo systemctl restart tsumego.service
+curl --fail http://127.0.0.1:8123/tsumego/healthz
 ```
 
-On that start, the server validates the complete document before writing, creates
-a timestamped byte-for-byte backup, and migrates each profile into `users/`.
+Because the service runs from the working tree, that tree is production:
+switching branches or leaving a broken edit in place will break the live site on
+the next restart.
+
+### Progress data and backups
+
+Progress is stored in one JSON document per display name below `reader-data/`,
+which is ignored by Git. Back it up before every upgrade, stopping the service so
+the set of per-user files is a consistent snapshot:
+
+```bash
+backup=~/tsumego-backups/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+mkdir -p ~/tsumego-backups
+sudo systemctl stop tsumego.service
+tar --create --gzip --file "$backup" --directory reader-data .
+sudo systemctl start tsumego.service
+tar --list --gzip --file "$backup" >/dev/null
+```
+
+On the first start with a legacy shared `progress.json` in the data directory,
+the server validates the complete document before writing, creates a timestamped
+byte-for-byte backup, and migrates each profile into `users/`.
 `progress-migration.json` records the restart-safe migration state. An interrupted
 migration resumes without duplicating events; an existing target, missing completed
 target, corrupt source, or corrupt backup stops startup instead of overwriting or
 silently dropping progress.
 
-Back up all JSON application data before every upgrade. Stop the service so the
-set of per-user files is a consistent snapshot, exclude the reproducible `.venv`
-and `.cache` directories, and then start the service again:
-
-```bash
-sudo install -d -o root -g root -m 0750 /var/backups/tsumego
-backup=/var/backups/tsumego/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
-sudo systemctl stop tsumego.service
-sudo tar --create --gzip --file "$backup" \
-  --directory /var/lib/tsumego --exclude=.venv --exclude=.cache .
-sudo systemctl start tsumego.service
-sudo tar --list --gzip --file "$backup" >/dev/null
-```
-
-The archive includes `users/`, the legacy backup, and the migration marker.
-When restoring it, stop the service first and retain ownership by the `tsumego`
-service account.
-
-To upgrade the checkout on its currently deployed branch, create and verify the
-backup above, then fast-forward the code, validate the committed lockfile, and
-restart and check the service:
-
-```bash
-cd /opt/101books.github.io
-git fetch --prune origin
-git pull --ff-only
-uv lock --check
-sudo systemctl restart tsumego.service
-curl --fail http://127.0.0.1:8123/tsumego/healthz
-curl --fail https://jirkuvserver.cz/tsumego/healthz
-```
-
-Production uses `uv run --frozen` so a stale or missing lockfile fails startup
-instead of changing the deployed dependency set.
+To bulk-import already-solved problems, drive `PUT /api/progress` against the
+running server rather than editing the JSON, which the process holds in memory.
 
 The reader does not authenticate browser-entered display names. Publish it only
 to trusted users or add access control at Apache; anyone who can reach the site
-can select another person's display name.
+can select another person's display name. `deploy/deploy.sh` writes a
+commented-out Basic authentication block into the Apache fragment for that.

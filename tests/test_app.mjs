@@ -48,6 +48,7 @@ function loadApp({
   fetchImpl,
   savedName = null,
   savedCollection = null,
+  savedToken = "test-session-token",
   pathname = "/",
   serviceWorkerSupported = true,
   serviceWorkerFails = false,
@@ -66,9 +67,12 @@ function loadApp({
     timers.set(nextTimerId, callback);
     return nextTimerId;
   };
+  // A stored name without a token is no longer a session, so a signed-in
+  // fixture needs both.
   const localStorage = new Map(
     [
       ["static-go-reader-user", savedName],
+      ["static-go-reader-token", savedName === null ? null : savedToken],
       ["static-go-reader-collection", savedCollection],
     ].filter(([, value]) => value !== null),
   );
@@ -181,6 +185,7 @@ globalThis.readerTestApi = {
   submitProfile: typeof submitProfile === "function" ? submitProfile : undefined,
   signOutProfile: typeof signOutProfile === "function" ? signOutProfile : undefined,
   getStoredUser: typeof getStoredUser === "function" ? getStoredUser : undefined,
+  handleProfileNameInput: typeof handleProfileNameInput === "function" ? handleProfileNameInput : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -208,13 +213,32 @@ globalThis.readerTestApi = {
   };
 }
 
-function response(body) {
+function response(body, status = 200) {
   return {
-    ok: true,
+    ok: status >= 200 && status < 300,
+    status,
     async json() {
       return body;
     },
   };
+}
+
+// Signing in is an HTTP call now, so every fixture that starts the reader needs
+// to answer it.
+function sessionResponse(path, options = {}, { known = ["Ada", "Grace"] } = {}) {
+  if (!path.endsWith("/api/session") || options.method !== "POST") return null;
+  const payload = JSON.parse(options.body);
+  if (!known.includes(payload.user) && !payload.create) {
+    return response({ error: "No profile with that name" }, 404);
+  }
+  if (payload.password === "wrong password") {
+    return response({ error: "Incorrect password" }, 401);
+  }
+  return response({
+    user: payload.user,
+    token: `token-for-${payload.user}`,
+    created: !known.includes(payload.user),
+  });
 }
 
 function createProblems() {
@@ -229,6 +253,8 @@ function createProblems() {
 function createFetch({ rejectPut = false, putNetworkError = false } = {}) {
   const problems = createProblems();
   return async (path, options = {}) => {
+    const session = sessionResponse(path, options);
+    if (session) return session;
     if (path === "/api/collections") {
       return response([
         {
@@ -243,7 +269,7 @@ function createFetch({ rejectPut = false, putNetworkError = false } = {}) {
     if (path === "/api/collections/test-collection") {
       return response({ slug: "test-collection", title: "Test collection", problems });
     }
-    if (path.startsWith("/api/progress?") && options.method === undefined) {
+    if (path === "/api/progress" && options.method === undefined) {
       return response({ problems: {} });
     }
     if (path === "/api/progress" && options.method === "PUT") {
@@ -307,7 +333,7 @@ function createCollectionFetch({ problems = {} } = {}) {
       if (path.startsWith("/api/collections/")) {
         return response(collections[decodeURIComponent(path.slice("/api/collections/".length))]);
       }
-      if (path.startsWith("/api/progress?")) return response({ problems });
+      if (path === "/api/progress") return response({ problems });
       throw new Error(`Unexpected request: ${path}`);
     },
   };
@@ -363,7 +389,7 @@ test("a configured base path prefixes API calls and collection history", async (
         problems: [{ id: "advanced:1@1", number: 1, black: ["bb"], white: [] }],
       });
     }
-    if (path === "/tsumego/api/progress?user=Ada") return response({ problems: {} });
+    if (path === "/tsumego/api/progress") return response({ problems: {} });
     if (path === "/tsumego/api/progress" && options.method === "PUT") {
       return response({ problems: { "advanced:1@1": { status: "solved" } } });
     }
@@ -383,9 +409,9 @@ test("a configured base path prefixes API calls and collection history", async (
   assert.deepEqual(calls, [
     ["/tsumego/api/collections", "GET"],
     ["/tsumego/api/collections/basic", "GET"],
-    ["/tsumego/api/progress?user=Ada", "GET"],
+    ["/tsumego/api/progress", "GET"],
     ["/tsumego/api/collections/advanced", "GET"],
-    ["/tsumego/api/progress?user=Ada", "GET"],
+    ["/tsumego/api/progress", "GET"],
     ["/tsumego/api/progress", "PUT"],
   ]);
   assert.deepEqual(historyCalls, ["/tsumego/collections/advanced"]);
@@ -415,8 +441,8 @@ test("the activity dialog loads base-prefixed recent events and restores keyboar
         problems: [{ id: "basic:1@1", number: 1, black: ["aa"], white: [] }],
       });
     }
-    if (path === "/tsumego/api/progress?user=Ada") return response({ problems: {} });
-    if (path === "/tsumego/api/activity?user=Ada&limit=50") {
+    if (path === "/tsumego/api/progress") return response({ problems: {} });
+    if (path === "/tsumego/api/activity?limit=50") {
       return activityResponse.promise;
     }
     throw new Error(`Unexpected request: ${path}`);
@@ -457,7 +483,7 @@ test("the activity dialog loads base-prefixed recent events and restores keyboar
   assert.equal(documentState.activeElement, closeButton);
   assert.equal(activityButton.disabled, true);
   assert.equal(elements.get("#activity-empty").textContent, "Loading activity…");
-  assert.deepEqual(calls.at(-1), "/tsumego/api/activity?user=Ada&limit=50");
+  assert.deepEqual(calls.at(-1), "/tsumego/api/activity?limit=50");
   activityResponse.resolve(response(activityEvents));
   await activityOpen;
   assert.deepEqual(
@@ -584,7 +610,7 @@ test("a valid saved collection is loaded after the catalog and starts at its fir
   assert.deepEqual(calls, [
     "/api/collections",
     "/api/collections/advanced",
-    "/api/progress?user=Ada",
+    "/api/progress",
   ]);
   assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
@@ -768,12 +794,13 @@ test("popstate waits for a pending save and then reconciles to the latest URL", 
     if (path.startsWith("/api/collections/")) {
       return response(collections[decodeURIComponent(path.slice("/api/collections/".length))]);
     }
-    if (path.startsWith("/api/progress?") && options.method === undefined) {
+    if (path === "/api/progress" && options.method === undefined) {
       return response({ problems: {} });
     }
     if (path === "/api/progress" && options.method === "PUT") {
       return pendingSave.promise;
     }
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements, firePopstate } = loadApp({
@@ -802,7 +829,7 @@ test("rapid popstate events discard a stale collection load and reconcile the la
     if (path === "/api/collections") return response(catalog);
     if (path === "/api/collections/advanced") return pendingAdvanced.promise;
     if (path === "/api/collections/basic") return response(collections.basic);
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements, firePopstate, localStorage } = loadApp({
@@ -835,7 +862,7 @@ test("popstate suppresses a stale chooser-load failure after loading the request
       return pendingAdvanced.promise;
     }
     if (path === "/api/collections/basic") return response(collections.basic);
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements, firePopstate } = loadApp({
@@ -867,7 +894,7 @@ test("popstate suppresses a stale startup-load failure after loading the request
       return pendingBasic.promise;
     }
     if (path === "/api/collections/advanced") return response(collections.advanced);
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements, firePopstate } = loadApp({
@@ -926,7 +953,7 @@ test("a failed history load restores the URL of the still-visible collection", a
     if (path === "/api/collections") return response(catalog);
     if (path === "/api/collections/basic") return response(collections.basic);
     if (path === "/api/collections/advanced") throw new Error("history load failed");
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements, firePopstate, historyReplaceCalls } = loadApp({
@@ -1036,11 +1063,32 @@ test("a name entered in the dialog is normalized before it is stored", async () 
   assert.equal(elements.get("#profile-signout").hidden, true);
 
   elements.get("#profile-name").value = "  Ada  ";
+  elements.get("#profile-password").value = "correct horse battery";
   await context.readerTestApi.submitProfile();
   await started;
 
   assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+  assert.equal(localStorage.get("static-go-reader-token"), "token-for-Ada");
   assert.equal(elements.get("#profile").textContent, "Ada");
+});
+
+test("signing in without a password is refused before any request", async () => {
+  const requests = [];
+  const inner = createFetch();
+  const { context, elements } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      requests.push(path);
+      return inner(path, options);
+    },
+  });
+  context.readerTestApi.startReader();
+
+  elements.get("#profile-name").value = "Ada";
+  await context.readerTestApi.submitProfile();
+
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.match(elements.get("#profile-error").textContent, /password/i);
+  assert.equal(requests.filter((path) => path.endsWith("/api/session")).length, 0);
 });
 
 test("closing the sign-in dialog without a name explains why nothing loads", async () => {
@@ -1152,17 +1200,19 @@ test("duplicate status actions and navigation are ignored while a save is pendin
   const problems = createProblems();
   let putCalls = 0;
   const fetchImpl = async (path, options = {}) => {
+    const session = sessionResponse(path, options);
+    if (session) return session;
     if (path === "/api/collections") {
       return response([{ slug: "test-collection", title: "Test collection", category: "tsumego", level: "20 kyu", problem_count: problems.length }]);
     }
     if (path === "/api/collections/test-collection") {
       return response({ slug: "test-collection", title: "Test collection", problems });
     }
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
     if (path === "/api/progress" && options.method === "PUT") {
       putCalls += 1;
       return pendingSave.promise;
     }
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
@@ -1189,14 +1239,16 @@ test("a failed pending save retains the visible problem and restores controls", 
   const pendingSave = Promise.withResolvers();
   const problems = createProblems();
   const fetchImpl = async (path, options = {}) => {
+    const session = sessionResponse(path, options);
+    if (session) return session;
     if (path === "/api/collections") {
       return response([{ slug: "test-collection", title: "Test collection", category: "tsumego", level: "20 kyu", problem_count: problems.length }]);
     }
     if (path === "/api/collections/test-collection") {
       return response({ slug: "test-collection", title: "Test collection", problems });
     }
-    if (path.startsWith("/api/progress?")) return response({ problems: {} });
     if (path === "/api/progress" && options.method === "PUT") return pendingSave.promise;
+    if (path === "/api/progress") return response({ problems: {} });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
@@ -1384,8 +1436,8 @@ test("shows the recorded duration in the activity list", async () => {
         problems: [{ id: "basic:1@1", number: 1, black: ["aa"], white: [] }],
       });
     }
-    if (path === "/api/progress?user=Ada") return response({ problems: {} });
-    if (path === "/api/activity?user=Ada&limit=50") return response({ events });
+    if (path === "/api/progress") return response({ problems: {} });
+    if (path === "/api/activity?limit=50") return response({ events });
     throw new Error(`Unexpected request: ${path}`);
   };
   const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
@@ -1428,7 +1480,7 @@ test("saving another name reloads that profile's progress", async () => {
   const inner = createFetch();
   const { context, elements, localStorage } = loadApp({
     fetchImpl: async (path, options = {}) => {
-      if (path.startsWith("/api/progress?user=")) requested.push(path);
+      if (path === "/api/progress" && options.method === undefined) requested.push(path);
       return inner(path, options);
     },
     savedName: "Ada",
@@ -1438,11 +1490,12 @@ test("saving another name reloads that profile's progress", async () => {
 
   context.readerTestApi.openProfilePanel();
   elements.get("#profile-name").value = "Grace";
+  elements.get("#profile-password").value = "correct horse battery";
   await context.readerTestApi.submitProfile();
 
   assert.equal(elements.get("#profile").textContent, "Grace");
   assert.equal(localStorage.get("static-go-reader-user"), "Grace");
-  assert.deepEqual(requested, ["/api/progress?user=Grace"]);
+  assert.deepEqual(requested, ["/api/progress"]);
   assert.equal(elements.get("#profile-panel").hidden, true);
 });
 
@@ -1480,9 +1533,101 @@ test("signing out clears the name and keeps the dialog open to sign in again", a
   assert.equal(elements.get("#profile").textContent, "Sign in");
 
   elements.get("#profile-name").value = "Grace";
+  elements.get("#profile-password").value = "correct horse battery";
   await context.readerTestApi.submitProfile();
 
   assert.equal(localStorage.get("static-go-reader-user"), "Grace");
   assert.equal(elements.get("#profile").textContent, "Grace");
   assert.equal(elements.get("#profile-panel").hidden, true);
+});
+
+test("a mistyped name offers to create rather than creating silently", async () => {
+  const attempts = [];
+  const inner = createFetch();
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path.endsWith("/api/session")) attempts.push(JSON.parse(options.body));
+      return inner(path, options);
+    },
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  elements.get("#profile-name").value = "Grase";
+  elements.get("#profile-password").value = "correct horse battery";
+  await context.readerTestApi.submitProfile();
+
+  // Nothing was created; the reader asks first.
+  assert.deepEqual(attempts.map((attempt) => attempt.create), [false]);
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.equal(elements.get("#profile-create").hidden, false);
+  assert.match(elements.get("#profile-error").textContent, /No profile called/);
+  assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+
+  await context.readerTestApi.submitProfile(undefined, { create: true });
+
+  assert.deepEqual(attempts.map((attempt) => attempt.create), [false, true]);
+  assert.equal(localStorage.get("static-go-reader-user"), "Grase");
+});
+
+test("correcting the name withdraws the offer to create the mistyped one", async () => {
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  elements.get("#profile-name").value = "Grase";
+  elements.get("#profile-password").value = "correct horse battery";
+  await context.readerTestApi.submitProfile();
+  assert.equal(elements.get("#profile-create").hidden, false);
+
+  elements.get("#profile-name").value = "Grace";
+  context.readerTestApi.handleProfileNameInput();
+
+  assert.equal(elements.get("#profile-create").hidden, true);
+});
+
+test("a wrong password is reported without signing anyone out", async () => {
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  elements.get("#profile-name").value = "Grace";
+  elements.get("#profile-password").value = "wrong password";
+  await context.readerTestApi.submitProfile();
+
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.match(elements.get("#profile-error").textContent, /Incorrect password/);
+  assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+});
+
+test("requests carry the session token", async () => {
+  const seen = [];
+  const inner = createFetch();
+  const { context } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path === "/api/progress") seen.push(options.headers?.Authorization);
+      return inner(path, options);
+    },
+    savedName: "Ada",
+    savedToken: "token-for-Ada",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(seen, ["Bearer token-for-Ada"]);
+});
+
+test("signing out discards the token as well as the name", async () => {
+  const { context, localStorage } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  context.readerTestApi.signOutProfile();
+
+  assert.equal(localStorage.has("static-go-reader-user"), false);
+  assert.equal(localStorage.has("static-go-reader-token"), false);
 });

@@ -12,6 +12,8 @@ const profileButton = document.querySelector("#profile");
 const profilePanel = document.querySelector("#profile-panel");
 const profileForm = document.querySelector("#profile-form");
 const profileNameInput = document.querySelector("#profile-name");
+const profilePasswordInput = document.querySelector("#profile-password");
+const profileCreateButton = document.querySelector("#profile-create");
 const profileError = document.querySelector("#profile-error");
 const profileSaveButton = document.querySelector("#profile-save");
 const profileSignOutButton = document.querySelector("#profile-signout");
@@ -53,9 +55,12 @@ let activeMillisecondsBeforePause = 0;
 let visibleSince;
 let profilePanelInvoker;
 let resolvePendingSignIn;
+let sessionToken;
+let offerCreateFor;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const USER_STORAGE_KEY = "static-go-reader-user";
+const TOKEN_STORAGE_KEY = "static-go-reader-token";
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
@@ -63,8 +68,10 @@ const MAX_PROBLEM_DURATION_SECONDS = 3600;
 
 async function fetchJson(path, options = {}) {
   let response;
+  const headers = { ...options.headers };
+  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
   try {
-    response = await fetch(readerPath(path), options);
+    response = await fetch(readerPath(path), { ...options, headers });
   } catch (error) {
     // fetch rejects with a TypeError only when the request never completed;
     // server-side failures arrive as a normal response and keep their message.
@@ -72,8 +79,16 @@ async function fetchJson(path, options = {}) {
     throw new Error(connectionErrorMessage(options.method));
   }
   const body = await response.json();
+  if (response.status === 401 && sessionToken) throw new SessionExpiredError();
   if (!response.ok) throw new Error(body.error || "Request failed");
   return body;
+}
+
+class SessionExpiredError extends Error {
+  constructor() {
+    super("Your session has expired. Sign in again.");
+    this.name = "SessionExpiredError";
+  }
 }
 
 // Reads are usually satisfied from the service worker cache, so a failed
@@ -121,12 +136,43 @@ function handleVisibilityChange() {
 
 function getStoredUser() {
   const existing = normalizeUserName(localStorage.getItem(USER_STORAGE_KEY));
-  if (!existing) {
-    localStorage.removeItem(USER_STORAGE_KEY);
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  // A name without a token is no longer a session; both are needed.
+  if (!existing || !token) {
+    clearSession();
     return null;
   }
+  sessionToken = token;
   localStorage.setItem(USER_STORAGE_KEY, existing);
   return existing;
+}
+
+function clearSession() {
+  sessionToken = undefined;
+  localStorage.removeItem(USER_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+function storeSession(name, token) {
+  user = name;
+  sessionToken = token;
+  localStorage.setItem(USER_STORAGE_KEY, name);
+  localStorage.setItem(TOKEN_STORAGE_KEY, token);
+}
+
+async function requestSession(name, password, create) {
+  const response = await fetch(readerPath("/api/session"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user: name, password, create }),
+  });
+  let body = {};
+  try {
+    body = await response.json();
+  } catch (error) {
+    body = {};
+  }
+  return { status: response.status, body };
 }
 
 function renderProfile() {
@@ -165,6 +211,9 @@ function showProfilePanel(invoker) {
   profileButton?.setAttribute("aria-expanded", "true");
   showModalBackdrop();
   if (profileNameInput) profileNameInput.value = user || "";
+  if (profilePasswordInput) profilePasswordInput.value = "";
+  setCreateOffer(null);
+  setProfileBusy(false);
   setProfileError("");
   // Signing out is only meaningful when somebody is signed in.
   if (profileSignOutButton) profileSignOutButton.hidden = !user;
@@ -201,34 +250,94 @@ function requestSignIn() {
   });
 }
 
-async function submitProfile(event) {
+// A create offer refers to one exact spelling; changing the name withdraws it.
+function handleProfileNameInput() {
+  if (offerCreateFor && normalizeUserName(profileNameInput?.value) !== offerCreateFor) {
+    setCreateOffer(null);
+    setProfileError("");
+  }
+}
+
+function setCreateOffer(name) {
+  offerCreateFor = name;
+  if (profileCreateButton) profileCreateButton.hidden = !name;
+}
+
+function readProfileForm() {
+  return {
+    name: normalizeUserName(profileNameInput?.value),
+    password: profilePasswordInput?.value ?? "",
+  };
+}
+
+async function submitProfile(event, { create = false } = {}) {
   event?.preventDefault?.();
-  const name = normalizeUserName(profileNameInput?.value);
+  const { name, password } = readProfileForm();
   if (!name) {
     setProfileError("Enter a name of 1 to 80 characters.");
     profileNameInput?.focus();
     return;
   }
+  if (!password) {
+    setProfileError("Enter your password.");
+    profilePasswordInput?.focus();
+    return;
+  }
+
+  setProfileBusy(true);
+  let attempt;
+  try {
+    attempt = await requestSession(name, password, create);
+  } catch (error) {
+    setProfileBusy(false);
+    setProfileError(connectionErrorMessage());
+    return;
+  }
+  setProfileBusy(false);
+
+  if (attempt.status === 404) {
+    // A mistyped name would otherwise open an empty profile that looks exactly
+    // like lost progress, so creating one is a separate, deliberate step.
+    setProfileError(`No profile called “${name}”. Create it?`);
+    setCreateOffer(name);
+    return;
+  }
+  if (attempt.status !== 200) {
+    setProfileError(attempt.body.error || "Sign in failed.");
+    setCreateOffer(null);
+    return;
+  }
 
   const previous = user;
-  user = name;
-  localStorage.setItem(USER_STORAGE_KEY, name);
+  setCreateOffer(null);
+  storeSession(attempt.body.user, attempt.body.token);
+  if (profilePasswordInput) profilePasswordInput.value = "";
   renderProfile();
   closeProfilePanel();
   if (resolvePendingSignIn) {
-    settleSignIn(name);
+    settleSignIn(user);
     return;
   }
-  if (name !== previous) await reloadForCurrentUser();
+  if (user !== previous) await reloadForCurrentUser();
+}
+
+function setProfileBusy(busy) {
+  for (const button of [profileSaveButton, profileCreateButton, profileSignOutButton]) {
+    if (button) button.disabled = busy;
+  }
+  if (profileNameInput) profileNameInput.disabled = busy;
+  if (profilePasswordInput) profilePasswordInput.disabled = busy;
 }
 
 // Signing out keeps the dialog open in its signed-out state instead of leaving
 // the reader with no name and no way to enter one.
 function signOutProfile() {
-  localStorage.removeItem(USER_STORAGE_KEY);
+  clearSession();
   user = undefined;
   renderProfile();
   if (profileNameInput) profileNameInput.value = "";
+  if (profilePasswordInput) profilePasswordInput.value = "";
+  setCreateOffer(null);
   if (profileSignOutButton) profileSignOutButton.hidden = true;
   setProfileError("");
   setControlsDisabled(true);
@@ -481,7 +590,6 @@ async function setCurrentStatus(status) {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user,
         problem_id: problem.id,
         status,
         ...(durationSeconds === undefined ? {} : { duration_seconds: durationSeconds }),
@@ -643,6 +751,13 @@ function setCollectionControlsDisabled(disabled) {
 
 function showError(error) {
   statusFeedback.textContent = error instanceof Error ? error.message : String(error);
+  if (error?.name === "SessionExpiredError") {
+    clearSession();
+    user = undefined;
+    renderProfile();
+    setControlsDisabled(true);
+    openProfilePanel();
+  }
 }
 
 function isCollectionPanelOpen() {
@@ -666,7 +781,14 @@ function hideModalBackdrop() {
 }
 
 function getProfilePanelFocusables() {
-  return [profileNameInput, profileSaveButton, profileSignOutButton, closeProfilePanelButton].filter(
+  return [
+    profileNameInput,
+    profilePasswordInput,
+    profileSaveButton,
+    profileCreateButton,
+    profileSignOutButton,
+    closeProfilePanelButton,
+  ].filter(
     (element) => element && !element.disabled && !element.hidden,
   );
 }
@@ -829,9 +951,7 @@ async function openActivityPanel(event) {
   isLoadingActivity = true;
   if (activityButton) activityButton.disabled = true;
   try {
-    const { events } = await fetchJson(
-      `/api/activity?user=${encodeURIComponent(user)}&limit=50`,
-    );
+    const { events } = await fetchJson("/api/activity?limit=50");
     renderActivity(events);
   } catch (error) {
     activityList?.replaceChildren();
@@ -849,7 +969,7 @@ async function openActivityPanel(event) {
 async function loadActiveCollection(slug, historyMode = "none", shouldApply = () => true) {
   const nextCollection = await fetchJson(`/api/collections/${encodeURIComponent(slug)}`);
   if (!shouldApply()) return false;
-  const nextStatuses = (await fetchJson(`/api/progress?user=${encodeURIComponent(user)}`)).problems;
+  const nextStatuses = (await fetchJson("/api/progress")).problems;
   if (!shouldApply()) return false;
   collection = nextCollection;
   statuses = nextStatuses;
@@ -1032,6 +1152,8 @@ solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
 profileButton?.addEventListener("click", openProfilePanel);
 profileForm?.addEventListener("submit", submitProfile);
+profileNameInput?.addEventListener("input", handleProfileNameInput);
+profileCreateButton?.addEventListener("click", () => submitProfile(undefined, { create: true }));
 profileSignOutButton?.addEventListener("click", signOutProfile);
 closeProfilePanelButton?.addEventListener("click", () => closeProfilePanel());
 changeCollectionButton?.addEventListener("click", openCollectionPanel);

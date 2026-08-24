@@ -78,9 +78,19 @@
           spellcheck="false"
           enterkeyhint="done"
         >
+        <label class="profile-form__label" for="profile-password">Password</label>
+        <input
+          id="profile-password"
+          class="profile-form__input"
+          type="password"
+          maxlength="200"
+          autocomplete="current-password"
+          enterkeyhint="done"
+        >
         <p id="profile-error" class="profile-form__error" role="alert" hidden></p>
         <div class="profile-form__actions">
-          <button id="profile-save" type="submit" class="profile-form__save">Save</button>
+          <button id="profile-save" type="submit" class="profile-form__save">Sign in</button>
+          <button id="profile-create" type="button" hidden>Create profile</button>
           <button id="profile-signout" type="button">Sign out</button>
         </div>
       </form>

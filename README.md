@@ -21,11 +21,9 @@ dependency install is needed.
 
 Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
-restores the last booklet selected in that browser. The reader asks for a display
-name on the first visit through its own dialog and shows the name in the header.
-Selecting it reopens that dialog to rename or sign out, so a mistyped name can be
-corrected instead of being stored for good. Renaming reloads that profile's
-progress; signing out keeps the dialog open to sign in again. Use **Change collection** to browse the API-sorted booklet
+restores the last booklet selected in that browser. Progress belongs to a password-protected profile. The reader asks for a name and
+password through its own dialog and shows the name in the header; selecting it
+reopens the dialog to switch profile or sign out. Use **Change collection** to browse the API-sorted booklet
 catalog and switch collections. Use **Activity** to review the current profile's
 recent solved and revisit actions with local timestamps and booklet/problem labels;
 the view is read-only and never exposes moves or solutions. Progress is stored
@@ -43,7 +41,39 @@ complete. During shared-file migration, valid legacy 200 Basic Go Problems IDs
 are converted to their corresponding namespaced IDs. Each migrated current
 status also becomes one initial activity event at its existing timestamp.
 
-`GET /api/activity?user=<name>&limit=<count>` returns newest-first activity with
+## Profiles and passwords
+
+There is no registration step: logging in with a name that nobody holds creates
+that profile. Because a mistyped name would otherwise open an empty profile that
+looks exactly like lost progress, creating one takes a deliberate second
+confirmation - the first attempt reports `No profile called "..."` and offers to
+create it.
+
+Passwords are hashed with `hashlib.scrypt` and a **random 16-byte salt per
+profile**, stored beside the hash in `reader-data/credentials/`. The salt is
+never derived from the name: a name is public and predictable, so an attacker
+could build tables for it before ever seeing the file, and reuse them across
+every deployment. Repeated failures back off per name, because guessing a
+friend's password is a likelier attack than cracking the file.
+
+A successful login returns a token signed with a secret in
+`reader-data/session-secret` (mode 0600). The token names the user, so the API
+no longer takes a `user` parameter and one session cannot write to another
+profile's progress. Deleting the secret signs everyone out.
+
+A profile that already holds progress but has no password must be claimed
+deliberately, or the first stranger to guess the name would inherit it:
+
+```bash
+python3 -m reader.admin --data-dir reader-data list
+python3 -m reader.admin --data-dir reader-data set-password jirka
+```
+
+TLS terminates at Cloudflare, which therefore sees passwords in transit. This is
+a tool for a handful of friends, not a secret store - do not reuse a password
+that matters.
+
+`GET /api/activity?limit=<count>` returns newest-first activity with
 collection titles, problem numbers and, where recorded, how long the problem was
 on screen before it was marked. The limit defaults to 50 and must be from 1
 through 100. The endpoint exposes neither moves nor solutions.
@@ -79,9 +109,9 @@ the device is online but the service is down. There is no write queue, so the
 action is refused rather than dropped silently. Only a rejected request is
 translated this way; errors the server itself returns keep their own message.
 
-Collection data reaches the cache once the worker controls the page, which is
-from the second visit onwards. On a first visit followed immediately by going
-offline the shell still renders and reports the connection error.
+Collection data reaches the cache once the worker controls the page. Signing in
+takes several requests, by which point it does, so one visit is enough for the
+reader to keep working offline afterwards.
 
 The service worker is network-first for everything and keeps a single cache.
 Both parts are deliberate. An install-time shell cache plus a runtime cache
@@ -184,10 +214,10 @@ silently dropping progress.
 To bulk-import already-solved problems, drive `PUT /api/progress` against the
 running server rather than editing the JSON, which the process holds in memory.
 
-The reader does not authenticate browser-entered display names. Publish it only
-to trusted users or add access control at Apache; anyone who can reach the site
-can select another person's display name. `deploy/deploy.sh` writes a
-commented-out Basic authentication block into the Apache fragment for that.
+Profiles are password-protected, so reaching the URL is no longer enough to open
+somebody else's progress. Anyone who reaches it can still create a profile of
+their own; `deploy/deploy.sh` writes a commented-out Basic authentication block
+into the Apache fragment if you would rather gate the whole site.
 
 ### Restarting without a password
 

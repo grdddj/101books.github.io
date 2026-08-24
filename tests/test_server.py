@@ -675,6 +675,12 @@ class HttpApiTests(unittest.TestCase):
 
         self.assertEqual(response, {"status": "ok"})
 
+    def test_reader_shell_carries_the_site_title(self) -> None:
+        with urlopen(f"{self.base_url}/") as response:
+            body = response.read().decode("utf-8")
+
+        self.assertIn("<title>Reading training</title>", body)
+
     def test_collection_reader_path_serves_reader_shell(self) -> None:
         for path in [
             "/collections/200-basic-go-problems",

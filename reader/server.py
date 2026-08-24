@@ -18,6 +18,9 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
+# A problem left open overnight says nothing about how long it was worked on,
+# so anything beyond an hour is rejected rather than recorded.
+MAX_PROBLEM_DURATION_SECONDS = 3600
 BASE_PATH_PATTERN = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
 
 
@@ -72,12 +75,23 @@ class ProgressStore:
                 raise StorageCorruptionError("Progress storage is corrupted")
             return dict(problems)
 
-    def set_status(self, user: str, problem_id: str, status: str) -> dict[str, dict[str, str]]:
+    def set_status(
+        self,
+        user: str,
+        problem_id: str,
+        status: str,
+        duration_seconds: int | None = None,
+    ) -> dict[str, dict[str, str]]:
         user = self._validate_user(user)
         if status not in self._STATUSES:
             raise ValueError(f"Invalid status: {status}")
         if problem_id not in self.problem_ids:
             raise ValueError(f"Unknown problem: {problem_id}")
+        if (
+            duration_seconds is not None
+            and not 0 <= duration_seconds <= MAX_PROBLEM_DURATION_SECONDS
+        ):
+            raise ValueError("Invalid duration")
 
         with self._locked_user(user):
             data = self._read_user_document(user)
@@ -93,11 +107,20 @@ class ProgressStore:
                     "status": status,
                     "updated_at": timestamp,
                 }
-                events.append({"problem_id": problem_id, "status": status, "timestamp": timestamp})
+                event: dict[str, str | int] = {
+                    "problem_id": problem_id,
+                    "status": status,
+                    "timestamp": timestamp,
+                }
+                # Older events predate timing and stay without the key rather
+                # than claiming a duration of zero.
+                if duration_seconds is not None:
+                    event["duration_seconds"] = duration_seconds
+                events.append(event)
             self._write_user_document(user, data)
             return dict(problems)
 
-    def get_activity(self, user: str, limit: int) -> list[dict[str, str]]:
+    def get_activity(self, user: str, limit: int) -> list[dict[str, str | int]]:
         user = self._validate_user(user)
         if not 1 <= limit <= 100:
             raise ValueError("Activity limit must be between 1 and 100")
@@ -215,9 +238,28 @@ class ProgressStore:
         for event in events:
             self._validate_event(event)
 
+    _REQUIRED_EVENT_KEYS: ClassVar[set[str]] = {"problem_id", "status", "timestamp"}
+
     def _validate_event(self, event: object) -> None:
-        if not isinstance(event, dict) or set(event) != {"problem_id", "status", "timestamp"}:
+        if not isinstance(event, dict):
             raise StorageCorruptionError("Progress storage is corrupted")
+        # duration_seconds is optional because events recorded before timing
+        # existed do not carry it.
+        keys = set(event)
+        if (
+            not self._REQUIRED_EVENT_KEYS
+            <= keys
+            <= self._REQUIRED_EVENT_KEYS | {"duration_seconds"}
+        ):
+            raise StorageCorruptionError("Progress storage is corrupted")
+        if "duration_seconds" in event:
+            duration = event["duration_seconds"]
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, int)
+                or not 0 <= duration <= MAX_PROBLEM_DURATION_SECONDS
+            ):
+                raise StorageCorruptionError("Progress storage is corrupted")
         problem_id = event["problem_id"]
         status = event["status"]
         timestamp = event["timestamp"]
@@ -837,6 +879,12 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
                 isinstance(payload.get(key), str) for key in ("user", "problem_id", "status")
             ):
                 raise ValueError("Invalid progress payload")
+            duration_seconds = payload.get("duration_seconds")
+            # bool is a subclass of int, so it has to be rejected explicitly.
+            if duration_seconds is not None and (
+                isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int)
+            ):
+                raise ValueError("Invalid duration")
         except OverflowError:
             self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
             return
@@ -846,7 +894,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
 
         try:
             problems = self.progress_store.set_status(
-                payload["user"], payload["problem_id"], payload["status"]
+                payload["user"], payload["problem_id"], payload["status"], duration_seconds
             )
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))

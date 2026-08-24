@@ -727,6 +727,54 @@ class HttpApiTests(unittest.TestCase):
             with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
                 self.assertEqual(response.headers["Cache-Control"], "no-cache")
 
+    def test_activity_reports_the_recorded_solve_duration(self) -> None:
+        self.put_json(
+            "/api/progress",
+            {
+                "user": "Ada",
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+                "duration_seconds": 42,
+            },
+        )
+
+        events = self.get_json("/api/activity?user=Ada")["events"]
+
+        self.assertEqual(events[0]["duration_seconds"], 42)
+
+    def test_activity_omits_the_duration_when_none_was_reported(self) -> None:
+        self.put_json(
+            "/api/progress",
+            {
+                "user": "Ada",
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+            },
+        )
+
+        events = self.get_json("/api/activity?user=Ada")["events"]
+
+        self.assertNotIn("duration_seconds", events[0])
+
+    def test_implausible_or_non_integer_durations_are_rejected(self) -> None:
+        for duration in [-1, 3601, 1.5, True, "12"]:
+            with self.subTest(duration=duration):
+                status, _ = self.request_json(
+                    "/api/progress",
+                    method="PUT",
+                    data=json.dumps(
+                        {
+                            "user": "Ada",
+                            "problem_id": "200-basic-go-problems:24176/174140@1",
+                            "status": "solved",
+                            "duration_seconds": duration,
+                        }
+                    ).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+
+                self.assertEqual(status, 400)
+
     def test_head_matches_get_routes_without_sending_a_body(self) -> None:
         for path in ["/", "/app.js", "/api/collections", "/healthz"]:
             with self.subTest(path=path):
@@ -1004,7 +1052,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         return response
 
-    def put_json(self, path: str, payload: dict[str, str]) -> dict[str, object]:
+    def put_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         status, response = self.request_json(
             path,
             method="PUT",

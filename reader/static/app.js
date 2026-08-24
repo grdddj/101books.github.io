@@ -40,11 +40,15 @@ let historyRequestId = 0;
 let historyReconciliationPromise;
 let resolveHistoryReconciliation;
 let isReconcilingHistory = false;
+let timedProblemId;
+let activeMillisecondsBeforePause = 0;
+let visibleSince;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
+const MAX_PROBLEM_DURATION_SECONDS = 3600;
 
 async function fetchJson(path, options = {}) {
   let response;
@@ -71,6 +75,37 @@ function connectionErrorMessage(method) {
 
 function readerPath(path) {
   return `${basePath}${path}`;
+}
+
+function startProblemTimer(problemId) {
+  if (timedProblemId === problemId) return;
+  timedProblemId = problemId;
+  activeMillisecondsBeforePause = 0;
+  visibleSince = isPageVisible() ? Date.now() : undefined;
+}
+
+function elapsedProblemSeconds() {
+  if (timedProblemId === undefined) return undefined;
+  const running = visibleSince === undefined ? 0 : Date.now() - visibleSince;
+  const seconds = Math.round((activeMillisecondsBeforePause + running) / 1000);
+  // The server rejects anything above an hour; a longer sitting says nothing
+  // useful about the problem, so it is reported as unmeasured.
+  return seconds >= 0 && seconds <= MAX_PROBLEM_DURATION_SECONDS ? seconds : undefined;
+}
+
+function isPageVisible() {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+function handleVisibilityChange() {
+  if (isPageVisible()) {
+    if (visibleSince === undefined) visibleSince = Date.now();
+    return;
+  }
+  if (visibleSince !== undefined) {
+    activeMillisecondsBeforePause += Date.now() - visibleSince;
+    visibleSince = undefined;
+  }
 }
 
 function getOrPromptUser() {
@@ -271,6 +306,7 @@ function renderBoard(problem) {
 function renderReader() {
   try {
     const problem = collection.problems[currentIndex];
+    startProblemTimer(problem.id);
     const currentStatus = statuses[problem.id]?.status || "unseen";
     const { solved: solvedCount, revisit: revisitCount } = getStatusTotals(
       collection.problems,
@@ -313,10 +349,16 @@ async function setCurrentStatus(status) {
   isSaving = true;
   setControlsDisabled(true);
   try {
+    const durationSeconds = elapsedProblemSeconds();
     const savedProgress = await fetchJson("/api/progress", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, problem_id: problem.id, status }),
+      body: JSON.stringify({
+        user,
+        problem_id: problem.id,
+        status,
+        ...(durationSeconds === undefined ? {} : { duration_seconds: durationSeconds }),
+      }),
     });
     statuses = savedProgress.problems;
     isSaving = false;
@@ -579,10 +621,28 @@ function renderActivity(events) {
       const item = document.createElement("li");
       item.className = "activity-entry";
       const action = event.status === "solved" ? "Solved" : "Revisit";
-      item.textContent = `${action} · ${event.collection_title} · Problem ${event.problem_number} · ${formatActivityTimestamp(event.timestamp)}`;
+      const duration = formatDuration(event.duration_seconds);
+      item.textContent = [
+        action,
+        event.collection_title,
+        `Problem ${event.problem_number}`,
+        formatActivityTimestamp(event.timestamp),
+        duration,
+      ]
+        .filter(Boolean)
+        .join(" · ");
       return item;
     }),
   );
+}
+
+// Events recorded before timing existed carry no duration and simply omit the
+// field rather than showing a misleading zero.
+function formatDuration(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 async function openActivityPanel(event) {
@@ -812,6 +872,7 @@ closeActivityPanelButton?.addEventListener("click", closeActivityPanel);
 window.addEventListener("popstate", loadCollectionFromHistory);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });
+document.addEventListener("visibilitychange", handleVisibilityChange);
 
 // Registration is best effort: it needs a secure context, so plain-HTTP
 // deployments simply run without offline support instead of failing.

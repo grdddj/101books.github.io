@@ -41,8 +41,16 @@ are converted to their corresponding namespaced IDs. Each migrated current
 status also becomes one initial activity event at its existing timestamp.
 
 `GET /api/activity?user=<name>&limit=<count>` returns newest-first activity with
-collection titles and problem numbers. The limit defaults to 50 and must be from
-1 through 100. The endpoint exposes neither moves nor solutions.
+collection titles, problem numbers and, where recorded, how long the problem was
+on screen before it was marked. The limit defaults to 50 and must be from 1
+through 100. The endpoint exposes neither moves nor solutions.
+
+`PUT /api/progress` accepts an optional integer `duration_seconds` from 0 to
+3600. The reader measures it from when a problem is displayed until it is marked,
+counting only time the page is actually visible so a locked phone does not
+inflate it. Anything longer than an hour is treated as unmeasured and simply not
+recorded; events written before timing existed carry no duration and display
+without one.
 
 The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status.
 

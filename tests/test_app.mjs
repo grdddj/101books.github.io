@@ -178,6 +178,7 @@ globalThis.readerTestApi = {
   openActivityPanel: typeof openActivityPanel === "function" ? openActivityPanel : undefined,
   openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
+  formatDuration: typeof formatDuration === "function" ? formatDuration : undefined,
   registerServiceWorker: typeof registerServiceWorker === "function" ? registerServiceWorker : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
@@ -1299,4 +1300,85 @@ test("keeps server-side error messages instead of reporting a connection problem
   await context.readerTestApi.setCurrentStatus("solved");
 
   assert.equal(elements.get("#status-feedback").textContent, "save failed");
+});
+
+test("formats durations as seconds, and as minutes past a minute", () => {
+  const { context } = loadApp({ fetchImpl: createFetch(), savedName: "tester" });
+  const { formatDuration } = context.readerTestApi;
+
+  assert.equal(formatDuration(0), "0s");
+  assert.equal(formatDuration(7), "7s");
+  assert.equal(formatDuration(59), "59s");
+  assert.equal(formatDuration(60), "1m 00s");
+  assert.equal(formatDuration(125), "2m 05s");
+  // Events recorded before timing existed carry no duration at all.
+  assert.equal(formatDuration(undefined), "");
+  assert.equal(formatDuration(-1), "");
+});
+
+test("sends the time spent on a problem with the status change", async () => {
+  const requests = [];
+  const inner = createFetch();
+  const { context } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (options.method === "PUT") requests.push(JSON.parse(options.body));
+      return inner(path, options);
+    },
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(requests.length, 1);
+  assert.equal(typeof requests[0].duration_seconds, "number");
+  assert.ok(requests[0].duration_seconds >= 0);
+});
+
+test("shows the recorded duration in the activity list", async () => {
+  const events = [
+    {
+      timestamp: "2026-08-23T12:34:56Z",
+      status: "solved",
+      collection_title: "Basic shapes",
+      problem_number: 1,
+      duration_seconds: 93,
+    },
+    // Recorded before timing existed, so it carries no duration.
+    {
+      timestamp: "2026-08-23T12:30:00Z",
+      status: "revisit",
+      collection_title: "Basic shapes",
+      problem_number: 1,
+    },
+  ];
+  const fetchImpl = async (path) => {
+    if (path === "/api/collections") {
+      return response([
+        { slug: "basic", title: "Basic shapes", category: "tsumego", level: "20 kyu", problem_count: 1 },
+      ]);
+    }
+    if (path === "/api/collections/basic") {
+      return response({
+        slug: "basic",
+        title: "Basic shapes",
+        problems: [{ id: "basic:1@1", number: 1, black: ["aa"], white: [] }],
+      });
+    }
+    if (path === "/api/progress?user=Ada") return response({ problems: {} });
+    if (path === "/api/activity?user=Ada&limit=50") return response({ events });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.openActivityPanel();
+
+  assert.deepEqual(
+    elements.get("#activity-list").appended.map((item) => item.textContent),
+    [
+      `Solved · Basic shapes · Problem 1 · ${new Date("2026-08-23T12:34:56Z").toLocaleString()} · 1m 33s`,
+      `Revisit · Basic shapes · Problem 1 · ${new Date("2026-08-23T12:30:00Z").toLocaleString()}`,
+    ],
+  );
 });

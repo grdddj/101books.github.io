@@ -79,16 +79,18 @@ async function withReader(port, run) {
 async function openReader(browser, base) {
   const context = await browser.newContext({ viewport: { width: 412, height: 915 } });
   const page = await context.newPage();
-  // A first visit signs in through the reader's own dialog, not a native prompt.
-  await context.addInitScript(() => {
-    try {
-      localStorage.setItem("static-go-reader-user", "swtester");
-    } catch (error) {
-      // A blocked storage access simply leaves the sign-in dialog showing.
-    }
-  });
   await page.goto(base, { waitUntil: "load" });
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 30000 });
+
+  // A first visit signs in through the reader's own dialog. Creating the
+  // profile is a deliberate second step, so the create button appears first.
+  await page.waitForSelector("#profile-panel", { state: "visible" });
+  await page.fill("#profile-name", "swtester");
+  await page.fill("#profile-password", "correct horse battery");
+  await page.click("#profile-save");
+  await page.waitForSelector("#profile-create", { state: "visible" });
+  await page.click("#profile-create");
+
   await page.waitForFunction(
     () => document.querySelector("#problem-ordinal")?.textContent?.includes("Problem"),
     { timeout: 30000 },
@@ -150,19 +152,48 @@ test("the reader still works with the server unreachable", { skip }, async () =>
   });
 });
 
-test("a cold first visit that goes offline explains itself", { skip }, async () => {
+test("one visit is enough to keep working offline", { skip }, async () => {
   await withReader(8213, async ({ base, browser, server }) => {
+    // Signing in takes several requests, by which point the worker controls the
+    // page, so the booklet is already cached without needing a second visit.
     const { context, page } = await openReader(browser, base);
 
-    // No second visit, so nothing but the shell was ever cached. The reader
-    // must still say what happened rather than render an empty board.
     server.kill("SIGKILL");
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await page.reload({ waitUntil: "load" });
     await page.waitForTimeout(3000);
 
-    const feedback = await page.evaluate(() => document.querySelector("#status-feedback").textContent);
-    assert.match(feedback, /Could not reach the server|You appear to be offline/);
+    const state = await page.evaluate(() => ({
+      ordinal: document.querySelector("#problem-ordinal").textContent,
+      stones: document.querySelectorAll("#board *").length,
+    }));
+    assert.match(state.ordinal, /^Problem \d+ of \d+$/);
+    assert.ok(state.stones > 0, "the cached board should still render offline");
+    await context.close();
+  });
+});
+
+test("the worker does not strip the session token from API requests", { skip }, async () => {
+  await withReader(8214, async ({ base, browser }) => {
+    const { context, page } = await openReader(browser, base);
+
+    const result = await page.evaluate(async () => {
+      const login = await fetch(new URL("api/session", location.href), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: "swauth", password: "correct horse battery", create: true }),
+      });
+      const { token } = await login.json();
+      // This request goes through the worker, which rebuilds it to force
+      // revalidation; rebuilding without the headers made every call 401.
+      const progress = await fetch(new URL("api/progress", location.href), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return { login: login.status, progress: progress.status };
+    });
+
+    assert.equal(result.login, 200);
+    assert.equal(result.progress, 200);
     await context.close();
   });
 });

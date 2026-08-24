@@ -51,8 +51,15 @@ function revalidating(request) {
   if (request.mode === "navigate") return request;
   // Built from the URL rather than the Request: a no-cors subresource request
   // cannot be reconstructed with an init, and silently falling back to it was
-  // enough to keep serving a superseded app.css.
-  return new Request(request.url, { cache: "reload", credentials: "same-origin" });
+  // enough to keep serving a superseded app.css. The headers must be carried
+  // across explicitly, or the session token is stripped and every API call
+  // comes back 401.
+  return new Request(request.url, {
+    cache: "reload",
+    credentials: "same-origin",
+    headers: request.headers,
+    method: request.method,
+  });
 }
 
 // Everything is network-first: the assets carry no content hash, so the only

@@ -46,7 +46,6 @@ function createElement(documentState) {
 function loadApp({
   basePath = "",
   fetchImpl,
-  promptResult,
   savedName = null,
   savedCollection = null,
   pathname = "/",
@@ -104,9 +103,6 @@ function loadApp({
       },
     },
     location,
-    prompt() {
-      return typeof promptResult === "function" ? promptResult() : promptResult;
-    },
     setTimeout: setTimer,
   };
   const context = {
@@ -134,6 +130,7 @@ function loadApp({
           if (
             selector === "#collection-panel" ||
             selector === "#activity-panel" ||
+            selector === "#profile-panel" ||
             selector === "#modal-backdrop"
           ) {
             element.hidden = true;
@@ -171,7 +168,6 @@ globalThis.readerTestApi = {
   handleWheel: typeof handleWheel === "function" ? handleWheel : undefined,
   getCollectionSlugFromPath: typeof getCollectionSlugFromPath === "function" ? getCollectionSlugFromPath : undefined,
   getCurrentIndex: () => currentIndex,
-  getOrPromptUser,
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
@@ -180,7 +176,11 @@ globalThis.readerTestApi = {
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
   formatDuration: typeof formatDuration === "function" ? formatDuration : undefined,
   registerServiceWorker: typeof registerServiceWorker === "function" ? registerServiceWorker : undefined,
-  switchProfile: typeof switchProfile === "function" ? switchProfile : undefined,
+  openProfilePanel: typeof openProfilePanel === "function" ? openProfilePanel : undefined,
+  closeProfilePanel: typeof closeProfilePanel === "function" ? closeProfilePanel : undefined,
+  submitProfile: typeof submitProfile === "function" ? submitProfile : undefined,
+  signOutProfile: typeof signOutProfile === "function" ? signOutProfile : undefined,
+  getStoredUser: typeof getStoredUser === "function" ? getStoredUser : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -318,7 +318,7 @@ test("a collection URL selects its catalog entry on startup", async () => {
   const { context, elements } = loadApp({
     fetchImpl,
     pathname: "/collections/test-collection",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
 
   await context.readerTestApi.startReader();
@@ -373,7 +373,7 @@ test("a configured base path prefixes API calls and collection history", async (
     basePath: "/tsumego",
     fetchImpl,
     pathname: "/tsumego/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
 
   await context.readerTestApi.startReader();
@@ -441,7 +441,7 @@ test("the activity dialog loads base-prefixed recent events and restores keyboar
     basePath: "/tsumego",
     fetchImpl,
     pathname: "/tsumego/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
 
   await context.readerTestApi.startReader();
@@ -491,7 +491,7 @@ test("an unknown collection URL reports an error without loading the first catal
   const { context, elements } = loadApp({
     fetchImpl,
     pathname: "/collections/missing",
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "basic",
   });
 
@@ -513,10 +513,10 @@ test("an unknown collection URL reports an error without loading the first catal
 });
 
 test("only the root and one collection segment are valid reader paths", () => {
-  const root = loadApp({ pathname: "/", promptResult: "Ada" });
+  const root = loadApp({ pathname: "/", savedName: "Ada" });
   assert.equal(root.context.readerTestApi.getCollectionPath().kind, "root");
 
-  const collection = loadApp({ pathname: "/collections/test-collection", promptResult: "Ada" });
+  const collection = loadApp({ pathname: "/collections/test-collection", savedName: "Ada" });
   assert.equal(collection.context.readerTestApi.getCollectionPath().kind, "collection");
   assert.equal(collection.context.readerTestApi.getCollectionPath().slug, "test-collection");
 
@@ -527,7 +527,7 @@ test("only the root and one collection segment are valid reader paths", () => {
     "/collections/%E0%A4",
   ];
   for (const pathname of invalidPaths) {
-    const { context } = loadApp({ pathname, promptResult: "Ada" });
+    const { context } = loadApp({ pathname, savedName: "Ada" });
     assert.equal(context.readerTestApi.getCollectionPath().kind, "invalid", pathname);
   }
 });
@@ -544,7 +544,7 @@ test("an invalid initial path reports an error without loading the saved collect
     const { context, elements } = loadApp({
       fetchImpl,
       pathname,
-      promptResult: "Ada",
+      savedName: "Ada",
       savedCollection: "basic",
     });
 
@@ -575,7 +575,7 @@ test("a valid saved collection is loaded after the catalog and starts at its fir
   });
   const { context, elements, localStorage } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "advanced",
   });
 
@@ -595,7 +595,7 @@ test("an invalid saved collection falls back to the first API-sorted catalog ent
   const { fetchImpl, catalog } = createCollectionFetch();
   const { context, elements, localStorage } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "missing",
   });
 
@@ -659,7 +659,7 @@ test("the collection list shows progress states and solved percentages", async (
   }
   const { context, elements } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "basic",
   });
 
@@ -706,7 +706,7 @@ test("selecting a collection persists it, pushes a shareable URL, closes the pan
   });
   const { context, elements, historyCalls, localStorage } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "basic",
   });
   await context.readerTestApi.startReader();
@@ -727,7 +727,7 @@ test("popstate loads the current collection URL without adding a history entry",
   const { context, elements, firePopstate, historyCalls } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
   await context.readerTestApi.selectCollection("advanced");
@@ -744,7 +744,7 @@ test("popstate rejects an invalid collection path without loading a saved collec
   const { context, elements, firePopstate, historyCalls } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
   calls.length = 0;
@@ -779,7 +779,7 @@ test("popstate waits for a pending save and then reconciles to the latest URL", 
   const { context, elements, firePopstate } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -808,7 +808,7 @@ test("rapid popstate events discard a stale collection load and reconcile the la
   const { context, elements, firePopstate, localStorage } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -841,7 +841,7 @@ test("popstate suppresses a stale chooser-load failure after loading the request
   const { context, elements, firePopstate } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -873,7 +873,7 @@ test("popstate suppresses a stale startup-load failure after loading the request
   const { context, elements, firePopstate } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
 
   const startup = context.readerTestApi.startReader();
@@ -900,7 +900,7 @@ test("a catalog failure during popstate reports the error and settles reconcilia
   const { context, elements, firePopstate } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
 
   const startup = context.readerTestApi.startReader();
@@ -932,7 +932,7 @@ test("a failed history load restores the URL of the still-visible collection", a
   const { context, elements, firePopstate, historyReplaceCalls } = loadApp({
     fetchImpl,
     pathname: "/collections/basic",
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -949,7 +949,7 @@ test("the collection dialog traps focus, restores its invoker, and blocks reader
   const { fetchImpl } = createCollectionFetch();
   const { context, documentState, elements } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "basic",
   });
   await context.readerTestApi.startReader();
@@ -987,7 +987,7 @@ test("opening the collection dialog cancels a queued reader wheel navigation", a
   const { fetchImpl } = createCollectionFetch();
   const { context, elements, flushTimers } = loadApp({
     fetchImpl,
-    promptResult: "Ada",
+    savedName: "Ada",
     savedCollection: "basic",
   });
   await context.readerTestApi.startReader();
@@ -1008,7 +1008,7 @@ test("status actions are ignored while the collection dialog is open", async () 
     if (path === "/api/progress" && options.method === "PUT") putCalls += 1;
     return baseFetch(path, options);
   };
-  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
   await context.readerTestApi.startReader();
   context.readerTestApi.openCollectionPanel({
     currentTarget: elements.get("#change-collection"),
@@ -1020,24 +1020,42 @@ test("status actions are ignored while the collection dialog is open", async () 
   assert.equal(context.readerTestApi.getCurrentIndex(), 0);
 });
 
-test("invalid saved name is discarded before a normalized replacement is stored", () => {
-  const { context, localStorage } = loadApp({ promptResult: "  Ada  ", savedName: " ".repeat(81) });
+test("an invalid stored name is discarded rather than used", () => {
+  const { context, localStorage } = loadApp({ savedName: " ".repeat(81) });
 
-  assert.equal(context.readerTestApi.getOrPromptUser(), "Ada");
-  assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+  assert.equal(context.readerTestApi.getStoredUser(), null);
+  assert.equal(localStorage.has("static-go-reader-user"), false);
 });
 
-test("cancelled replacement leaves no invalid name and displays recoverable feedback", async () => {
-  const { context, elements, localStorage } = loadApp({ promptResult: null, savedName: " " });
+test("a name entered in the dialog is normalized before it is stored", async () => {
+  const { context, elements, localStorage } = loadApp({ fetchImpl: createFetch() });
+  const started = context.readerTestApi.startReader();
 
-  await context.readerTestApi.startReader();
+  // The reader is mid-load at this point, which must not stop it asking.
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.equal(elements.get("#profile-signout").hidden, true);
+
+  elements.get("#profile-name").value = "  Ada  ";
+  await context.readerTestApi.submitProfile();
+  await started;
+
+  assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+  assert.equal(elements.get("#profile").textContent, "Ada");
+});
+
+test("closing the sign-in dialog without a name explains why nothing loads", async () => {
+  const { context, elements, localStorage } = loadApp({ fetchImpl: createFetch(), savedName: " " });
+  const started = context.readerTestApi.startReader();
+
+  context.readerTestApi.closeProfilePanel();
+  await started;
 
   assert.equal(localStorage.has("static-go-reader-user"), false);
   assert.match(elements.get("#status-feedback").textContent, /valid name is required/i);
 });
 
 test("board crops include a one-line margin around the initial stones", () => {
-  const { context } = loadApp({ promptResult: "Ada" });
+  const { context } = loadApp({ savedName: "Ada" });
   const cropFor = context.readerTestApi.getBoardCrop
     ? (problem) => JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem)))
     : () => null;
@@ -1057,7 +1075,7 @@ test("board crops include a one-line margin around the initial stones", () => {
 });
 
 test("board stones use grid positions relative to the crop", () => {
-  const { context, elements } = loadApp({ promptResult: "Ada" });
+  const { context, elements } = loadApp({ savedName: "Ada" });
 
   context.readerTestApi.renderBoard({ black: ["dq"], white: [] });
 
@@ -1070,7 +1088,7 @@ test("board stones use grid positions relative to the crop", () => {
 });
 
 test("rectangular crops set matching dimensions and keep grid intervals square", () => {
-  const { context, elements } = loadApp({ promptResult: "Ada" });
+  const { context, elements } = loadApp({ savedName: "Ada" });
 
   context.readerTestApi.renderBoard({ black: ["be", "hh"], white: [] });
 
@@ -1084,7 +1102,7 @@ test("rectangular crops set matching dimensions and keep grid intervals square",
 });
 
 test("board creates one explicit grid line for every crop row and column", () => {
-  const { context, elements } = loadApp({ promptResult: "Ada" });
+  const { context, elements } = loadApp({ savedName: "Ada" });
 
   context.readerTestApi.renderBoard({ black: ["be", "hh"], white: [] });
 
@@ -1103,7 +1121,7 @@ test("board creates one explicit grid line for every crop row and column", () =>
 });
 
 test("successful status saves advance one problem without passing the final problem", async () => {
-  const { context, elements } = loadApp({ fetchImpl: createFetch(), promptResult: "Ada" });
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
   await context.readerTestApi.startReader();
   context.readerTestApi.navigate(4);
 
@@ -1119,7 +1137,7 @@ test("successful status saves advance one problem without passing the final prob
 test("failed status saves do not change the current problem", async () => {
   const { context } = loadApp({
     fetchImpl: createFetch({ rejectPut: true }),
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
   context.readerTestApi.navigate(4);
@@ -1147,7 +1165,7 @@ test("duplicate status actions and navigation are ignored while a save is pendin
     }
     throw new Error(`Unexpected request: ${path}`);
   };
-  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
   await context.readerTestApi.startReader();
   context.readerTestApi.navigate(4);
 
@@ -1181,7 +1199,7 @@ test("a failed pending save retains the visible problem and restores controls", 
     if (path === "/api/progress" && options.method === "PUT") return pendingSave.promise;
     throw new Error(`Unexpected request: ${path}`);
   };
-  const { context, elements } = loadApp({ fetchImpl, promptResult: "Ada" });
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
   await context.readerTestApi.startReader();
   context.readerTestApi.navigate(4);
 
@@ -1251,7 +1269,7 @@ test("reports an offline message when the catalog cannot be loaded", async () =>
     fetchImpl: async () => {
       throw networkError();
     },
-    promptResult: "Ada",
+    savedName: "Ada",
     onLine: false,
   });
 
@@ -1263,7 +1281,7 @@ test("reports an offline message when the catalog cannot be loaded", async () =>
 test("reports an offline message when a save cannot reach the server", async () => {
   const { context, elements } = loadApp({
     fetchImpl: createFetch({ putNetworkError: true }),
-    promptResult: "Ada",
+    savedName: "Ada",
     onLine: false,
   });
   await context.readerTestApi.startReader();
@@ -1279,7 +1297,7 @@ test("reports an offline message when a save cannot reach the server", async () 
 test("distinguishes an unreachable server from a disconnected device", async () => {
   const { context, elements } = loadApp({
     fetchImpl: createFetch({ putNetworkError: true }),
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -1294,7 +1312,7 @@ test("distinguishes an unreachable server from a disconnected device", async () 
 test("keeps server-side error messages instead of reporting a connection problem", async () => {
   const { context, elements } = loadApp({
     fetchImpl: createFetch({ rejectPut: true }),
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -1325,7 +1343,7 @@ test("sends the time spent on a problem with the status change", async () => {
       if (options.method === "PUT") requests.push(JSON.parse(options.body));
       return inner(path, options);
     },
-    promptResult: "Ada",
+    savedName: "Ada",
   });
   await context.readerTestApi.startReader();
 
@@ -1393,7 +1411,19 @@ test("shows the signed-in name in the header", async () => {
   assert.match(elements.get("#profile").attributes["aria-label"], /Signed in as Ada/);
 });
 
-test("switching to another name reloads that profile's progress", async () => {
+test("the dialog opens with the current name and an escape route", async () => {
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.equal(elements.get("#profile-name").value, "Ada");
+  assert.equal(elements.get("#profile-signout").hidden, false);
+  assert.equal(elements.get("#modal-backdrop").hidden, false);
+});
+
+test("saving another name reloads that profile's progress", async () => {
   const requested = [];
   const inner = createFetch();
   const { context, elements, localStorage } = loadApp({
@@ -1402,46 +1432,57 @@ test("switching to another name reloads that profile's progress", async () => {
       return inner(path, options);
     },
     savedName: "Ada",
-    promptResult: "Grace",
   });
   await context.readerTestApi.startReader();
   requested.length = 0;
 
-  await context.readerTestApi.switchProfile();
+  context.readerTestApi.openProfilePanel();
+  elements.get("#profile-name").value = "Grace";
+  await context.readerTestApi.submitProfile();
 
   assert.equal(elements.get("#profile").textContent, "Grace");
   assert.equal(localStorage.get("static-go-reader-user"), "Grace");
   assert.deepEqual(requested, ["/api/progress?user=Grace"]);
+  assert.equal(elements.get("#profile-panel").hidden, true);
 });
 
-test("cancelling the profile prompt keeps the current name", async () => {
+test("an empty name is refused without closing the dialog", async () => {
   const { context, elements, localStorage } = loadApp({
     fetchImpl: createFetch(),
     savedName: "Ada",
-    promptResult: null,
   });
   await context.readerTestApi.startReader();
 
-  await context.readerTestApi.switchProfile();
+  context.readerTestApi.openProfilePanel();
+  elements.get("#profile-name").value = "   ";
+  await context.readerTestApi.submitProfile();
 
-  assert.equal(elements.get("#profile").textContent, "Ada");
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.equal(elements.get("#profile-error").hidden, false);
+  assert.match(elements.get("#profile-error").textContent, /1 to 80/);
   assert.equal(localStorage.get("static-go-reader-user"), "Ada");
 });
 
-test("an empty name signs out and asks for a new one", async () => {
-  let prompts = 0;
+test("signing out clears the name and keeps the dialog open to sign in again", async () => {
   const { context, elements, localStorage } = loadApp({
     fetchImpl: createFetch(),
     savedName: "Ada",
-    // First prompt is the switch dialog (empty = sign out), second is the
-    // sign-in that follows it.
-    promptResult: () => (prompts++ === 0 ? "   " : "Grace"),
   });
   await context.readerTestApi.startReader();
 
-  await context.readerTestApi.switchProfile();
+  context.readerTestApi.openProfilePanel();
+  context.readerTestApi.signOutProfile();
 
-  assert.equal(prompts, 2);
-  assert.equal(elements.get("#profile").textContent, "Grace");
+  assert.equal(localStorage.has("static-go-reader-user"), false);
+  assert.equal(elements.get("#profile-panel").hidden, false);
+  assert.equal(elements.get("#profile-name").value, "");
+  assert.equal(elements.get("#profile-signout").hidden, true);
+  assert.equal(elements.get("#profile").textContent, "Sign in");
+
+  elements.get("#profile-name").value = "Grace";
+  await context.readerTestApi.submitProfile();
+
   assert.equal(localStorage.get("static-go-reader-user"), "Grace");
+  assert.equal(elements.get("#profile").textContent, "Grace");
+  assert.equal(elements.get("#profile-panel").hidden, true);
 });

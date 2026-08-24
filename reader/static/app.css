@@ -108,6 +108,100 @@ h1 {
   box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
 }
 
+/* The profile dialog is narrower than the browsing panels: it holds one field
+   and three buttons, not a list of 108 booklets. */
+.profile-panel {
+  position: fixed;
+  z-index: 4;
+  top: 1rem;
+  right: 1rem;
+  left: 1rem;
+  width: min(100% - 2rem, 26rem);
+  max-height: calc(100vh - 2rem);
+  margin: 0 auto;
+  overflow: auto;
+  border: 1px solid #7b6a59;
+  border-radius: 0.5rem;
+  background: #f7f3ed;
+  box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
+}
+
+.profile-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid #d8cec0;
+}
+
+.profile-panel__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.profile-form {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1rem;
+}
+
+.profile-form__label {
+  color: #5c5147;
+  font-size: 0.9rem;
+}
+
+.profile-form__input {
+  min-height: 2.9rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #7b6a59;
+  border-radius: 0.35rem;
+  background: #fffdf9;
+  color: inherit;
+  font: inherit;
+}
+
+.profile-form__error {
+  margin: 0;
+  color: #8c2f1d;
+  font-size: 0.9rem;
+}
+
+.profile-form__actions {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.profile-form__actions button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 2.9rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid #7b6a59;
+  border-radius: 0.35rem;
+  background: #fffdf9;
+  cursor: pointer;
+}
+
+.profile-form__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+/* Scoped through the actions row: a bare .profile-form__save loses to
+   `.profile-form__actions button` and the fill reverts to cream, leaving white
+   text on a near-white button. */
+.profile-form__actions .profile-form__save {
+  border-color: #17603c;
+  background: #1f7a4d;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.profile-form__actions .profile-form__save:hover:not(:disabled) {
+  background: #186139;
+}
+
 .modal-backdrop {
   position: fixed;
   z-index: 3;

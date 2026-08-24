@@ -9,6 +9,13 @@ const solvedButton = document.querySelector("#solved");
 const revisitButton = document.querySelector("#revisit");
 const nextButton = document.querySelector("#next");
 const profileButton = document.querySelector("#profile");
+const profilePanel = document.querySelector("#profile-panel");
+const profileForm = document.querySelector("#profile-form");
+const profileNameInput = document.querySelector("#profile-name");
+const profileError = document.querySelector("#profile-error");
+const profileSaveButton = document.querySelector("#profile-save");
+const profileSignOutButton = document.querySelector("#profile-signout");
+const closeProfilePanelButton = document.querySelector("#close-profile-panel");
 const changeCollectionButton = document.querySelector("#change-collection");
 const collectionPanel = document.querySelector("#collection-panel");
 const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
@@ -44,6 +51,8 @@ let isReconcilingHistory = false;
 let timedProblemId;
 let activeMillisecondsBeforePause = 0;
 let visibleSince;
+let profilePanelInvoker;
+let resolvePendingSignIn;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
 const USER_STORAGE_KEY = "static-go-reader-user";
@@ -110,18 +119,14 @@ function handleVisibilityChange() {
   }
 }
 
-function getOrPromptUser() {
+function getStoredUser() {
   const existing = normalizeUserName(localStorage.getItem(USER_STORAGE_KEY));
-  if (existing) {
-    localStorage.setItem(USER_STORAGE_KEY, existing);
-    return existing;
+  if (!existing) {
+    localStorage.removeItem(USER_STORAGE_KEY);
+    return null;
   }
-
-  localStorage.removeItem(USER_STORAGE_KEY);
-  const name = normalizeUserName(window.prompt("Your name for local progress:", ""));
-  if (!name) throw new Error("A valid name is required to track progress.");
-  localStorage.setItem(USER_STORAGE_KEY, name);
-  return name;
+  localStorage.setItem(USER_STORAGE_KEY, existing);
+  return existing;
 }
 
 function renderProfile() {
@@ -131,38 +136,103 @@ function renderProfile() {
     "aria-label",
     user ? `Signed in as ${user}. Change name or sign out.` : "Sign in",
   );
+  // Always reachable: it is the only way back in after signing out, and the
+  // only way to fix a name typed wrongly on the first visit.
   profileButton.disabled = false;
 }
 
-// A mistyped name used to be permanent: it was written to localStorage on the
-// first visit and nothing could reach it afterwards.
-async function switchProfile() {
-  if (isSaving || isLoadingCollection || isDialogOpen()) return;
-  const answer = window.prompt(
-    `Signed in as ${user}. Enter a different name, or leave empty to sign out:`,
-    user,
-  );
-  if (answer === null) return;
+function isProfilePanelOpen() {
+  return Boolean(profilePanel && !profilePanel.hidden);
+}
 
-  const name = normalizeUserName(answer);
-  if (name === user) return;
-  if (!name) {
-    localStorage.removeItem(USER_STORAGE_KEY);
-    user = undefined;
-    renderProfile();
-    try {
-      user = getOrPromptUser();
-    } catch (error) {
-      setControlsDisabled(true);
-      showError(error);
-      return;
-    }
-  } else {
-    user = name;
-    localStorage.setItem(USER_STORAGE_KEY, name);
+function setProfileError(message) {
+  if (!profileError) return;
+  profileError.textContent = message;
+  profileError.hidden = !message;
+}
+
+function openProfilePanel(event) {
+  if (!profilePanel || isSaving || isLoadingCollection || isDialogOpen()) return;
+  showProfilePanel(event?.currentTarget ?? document.activeElement);
+}
+
+// Sign-in at startup bypasses the guards above on purpose: the reader is
+// mid-load and has no name yet, which is precisely when it must ask for one.
+function showProfilePanel(invoker) {
+  if (!profilePanel) return;
+  profilePanelInvoker = invoker;
+  profilePanel.hidden = false;
+  profileButton?.setAttribute("aria-expanded", "true");
+  showModalBackdrop();
+  if (profileNameInput) profileNameInput.value = user || "";
+  setProfileError("");
+  // Signing out is only meaningful when somebody is signed in.
+  if (profileSignOutButton) profileSignOutButton.hidden = !user;
+  profileNameInput?.focus();
+}
+
+function closeProfilePanel({ restoreFocus = true } = {}) {
+  if (!profilePanel) return;
+  profilePanel.hidden = true;
+  profileButton?.setAttribute("aria-expanded", "false");
+  hideModalBackdrop();
+  setProfileError("");
+  if (restoreFocus) {
+    const target = profilePanelInvoker ?? profileButton;
+    profilePanelInvoker = undefined;
+    target?.focus();
   }
+  // Closing without a name leaves the reader unusable, so say so rather than
+  // showing an empty board.
+  if (!user) settleSignIn(null);
+}
+
+function settleSignIn(name) {
+  if (!resolvePendingSignIn) return;
+  const resolve = resolvePendingSignIn;
+  resolvePendingSignIn = undefined;
+  resolve(name);
+}
+
+function requestSignIn() {
+  return new Promise((resolve) => {
+    resolvePendingSignIn = resolve;
+    showProfilePanel(profileButton);
+  });
+}
+
+async function submitProfile(event) {
+  event?.preventDefault?.();
+  const name = normalizeUserName(profileNameInput?.value);
+  if (!name) {
+    setProfileError("Enter a name of 1 to 80 characters.");
+    profileNameInput?.focus();
+    return;
+  }
+
+  const previous = user;
+  user = name;
+  localStorage.setItem(USER_STORAGE_KEY, name);
   renderProfile();
-  await reloadForCurrentUser();
+  closeProfilePanel();
+  if (resolvePendingSignIn) {
+    settleSignIn(name);
+    return;
+  }
+  if (name !== previous) await reloadForCurrentUser();
+}
+
+// Signing out keeps the dialog open in its signed-out state instead of leaving
+// the reader with no name and no way to enter one.
+function signOutProfile() {
+  localStorage.removeItem(USER_STORAGE_KEY);
+  user = undefined;
+  renderProfile();
+  if (profileNameInput) profileNameInput.value = "";
+  if (profileSignOutButton) profileSignOutButton.hidden = true;
+  setProfileError("");
+  setControlsDisabled(true);
+  profileNameInput?.focus();
 }
 
 async function reloadForCurrentUser() {
@@ -479,6 +549,16 @@ function handleWheel(event) {
 }
 
 function handleKeydown(event) {
+  if (isProfilePanelOpen()) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeProfilePanel();
+      return;
+    }
+    if (event.key === "Tab") trapProfilePanelFocus(event);
+    // Everything else belongs to the text field.
+    return;
+  }
   if (isCollectionPanelOpen()) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -553,9 +633,9 @@ function setControlsDisabled(disabled) {
 function setCollectionControlsDisabled(disabled) {
   if (changeCollectionButton) changeCollectionButton.disabled = disabled;
   if (activityButton) activityButton.disabled = disabled;
-  // The profile stays reachable once a name is known, so a wrong name can be
-  // corrected even when the catalog failed to load.
-  if (profileButton) profileButton.disabled = !user;
+  // The profile stays reachable even when the catalog failed to load: that is
+  // exactly when a wrong name most needs correcting.
+  if (profileButton) profileButton.disabled = false;
   for (const { option } of collectionButtons) {
     option.disabled = disabled;
   }
@@ -574,7 +654,7 @@ function isActivityPanelOpen() {
 }
 
 function isDialogOpen() {
-  return isCollectionPanelOpen() || isActivityPanelOpen();
+  return isCollectionPanelOpen() || isActivityPanelOpen() || isProfilePanelOpen();
 }
 
 function showModalBackdrop() {
@@ -583,6 +663,29 @@ function showModalBackdrop() {
 
 function hideModalBackdrop() {
   if (!isDialogOpen() && modalBackdrop) modalBackdrop.hidden = true;
+}
+
+function getProfilePanelFocusables() {
+  return [profileNameInput, profileSaveButton, profileSignOutButton, closeProfilePanelButton].filter(
+    (element) => element && !element.disabled && !element.hidden,
+  );
+}
+
+function trapProfilePanelFocus(event) {
+  const focusables = getProfilePanelFocusables();
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+  if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function getCollectionPanelFocusables() {
@@ -884,8 +987,9 @@ async function startReader() {
   isLoadingCollection = true;
   try {
     setControlsDisabled(true);
-    user = getOrPromptUser();
+    user = getStoredUser() ?? (await requestSignIn());
     renderProfile();
+    if (!user) throw new Error("A valid name is required to track progress.");
     catalog = await fetchJson("/api/collections");
     renderCollectionList();
     const path = getCollectionPath();
@@ -926,7 +1030,10 @@ previousButton.addEventListener("click", () => navigate(-1));
 nextButton.addEventListener("click", () => navigate(1));
 solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
-profileButton?.addEventListener("click", switchProfile);
+profileButton?.addEventListener("click", openProfilePanel);
+profileForm?.addEventListener("submit", submitProfile);
+profileSignOutButton?.addEventListener("click", signOutProfile);
+closeProfilePanelButton?.addEventListener("click", () => closeProfilePanel());
 changeCollectionButton?.addEventListener("click", openCollectionPanel);
 closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
 activityButton?.addEventListener("click", openActivityPanel);

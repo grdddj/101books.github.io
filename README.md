@@ -22,9 +22,10 @@ dependency install is needed.
 Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
 restores the last booklet selected in that browser. The reader asks for a display
-name on the first visit and shows it in the header. Selecting it offers a
-different name, or signs out when left empty and asks for a new one, so a
-mistyped name can be corrected instead of being stored for good. Use **Change collection** to browse the API-sorted booklet
+name on the first visit through its own dialog and shows the name in the header.
+Selecting it reopens that dialog to rename or sign out, so a mistyped name can be
+corrected instead of being stored for good. Renaming reloads that profile's
+progress; signing out keeps the dialog open to sign in again. Use **Change collection** to browse the API-sorted booklet
 catalog and switch collections. Use **Activity** to review the current profile's
 recent solved and revisit actions with local timestamps and booklet/problem labels;
 the view is read-only and never exposes moves or solutions. Progress is stored

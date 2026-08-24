@@ -79,7 +79,14 @@ async function withReader(port, run) {
 async function openReader(browser, base) {
   const context = await browser.newContext({ viewport: { width: 412, height: 915 } });
   const page = await context.newPage();
-  page.on("dialog", (dialog) => dialog.accept("swtester"));
+  // A first visit signs in through the reader's own dialog, not a native prompt.
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem("static-go-reader-user", "swtester");
+    } catch (error) {
+      // A blocked storage access simply leaves the sign-in dialog showing.
+    }
+  });
   await page.goto(base, { waitUntil: "load" });
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 30000 });
   await page.waitForFunction(
@@ -92,7 +99,9 @@ async function openReader(browser, base) {
 test("a deployed stylesheet reaches a browser that already installed the worker", { skip }, async () => {
   await withReader(8211, async ({ base, root, browser }) => {
     const deployedCss = await readFile(cssPath, "utf8");
-    const olderCss = deployedCss.replace("#1f7a4d", "#abcdef");
+    // replaceAll, not replace: the green is used by more than one rule now, and
+    // swapping only the first left #solved untouched.
+    const olderCss = deployedCss.replaceAll("#1f7a4d", "#abcdef");
     const servedCss = join(root, "reader/static/app.css");
     await writeFile(servedCss, olderCss);
 

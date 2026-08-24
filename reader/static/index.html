@@ -53,6 +53,39 @@
     </header>
     <div id="modal-backdrop" class="modal-backdrop" aria-hidden="true" hidden></div>
     <section
+      id="profile-panel"
+      class="profile-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profile-panel-title"
+      hidden
+    >
+      <div class="profile-panel__header">
+        <h2 id="profile-panel-title">Profile</h2>
+        <button id="close-profile-panel" type="button">Close</button>
+      </div>
+      <form id="profile-form" class="profile-form">
+        <label class="profile-form__label" for="profile-name">
+          Name your progress is tracked under
+        </label>
+        <input
+          id="profile-name"
+          class="profile-form__input"
+          type="text"
+          maxlength="80"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          enterkeyhint="done"
+        >
+        <p id="profile-error" class="profile-form__error" role="alert" hidden></p>
+        <div class="profile-form__actions">
+          <button id="profile-save" type="submit" class="profile-form__save">Save</button>
+          <button id="profile-signout" type="button">Sign out</button>
+        </div>
+      </form>
+    </section>
+    <section
       id="collection-panel"
       class="collection-panel"
       role="dialog"

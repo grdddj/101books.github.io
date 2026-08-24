@@ -7,7 +7,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -23,10 +22,10 @@ from reader.server import (
 )
 
 
-def user_file_path(progress_path: Path, user: str) -> Path:
+def user_file_path(data_directory: Path, user: str) -> Path:
     normalized_user = user.strip()
     filename = f"{hashlib.sha256(normalized_user.encode()).hexdigest()}.json"
-    return progress_path.parent / "users" / filename
+    return data_directory / "users" / filename
 
 
 class CollectionTests(unittest.TestCase):
@@ -199,7 +198,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
 
     def test_progress_store_uses_safe_deterministic_isolated_user_files(self) -> None:
-        path = self.root / "reader-data/progress.json"
+        path = self.root / "reader-data"
         store = ProgressStore(path, {self.problem_id})
 
         ada_progress = store.set_status("../../Ada", self.problem_id, "solved")
@@ -207,19 +206,18 @@ class ProgressStoreTests(unittest.TestCase):
 
         self.assertEqual(ada_progress[self.problem_id]["status"], "solved")
         self.assertEqual(bert_progress[self.problem_id]["status"], "revisit")
-        user_files = sorted((path.parent / "users").glob("*.json"))
+        user_files = sorted((path / "users").glob("*.json"))
         self.assertEqual(len(user_files), 2)
-        self.assertTrue(all(file.parent == path.parent / "users" for file in user_files))
+        self.assertTrue(all(file.parent == path / "users" for file in user_files))
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}\.json", file.name) for file in user_files))
         self.assertEqual(user_file_path(path, "../../Ada"), user_file_path(path, "  ../../Ada  "))
         saved_names = {json.loads(file.read_text())["user"] for file in user_files}
         self.assertEqual(saved_names, {"../../Ada", "Bert / ../"})
         self.assertEqual(store.get_user("../../Ada"), ada_progress)
         self.assertEqual(store.get_user("Bert / ../"), bert_progress)
-        self.assertFalse(path.exists())
 
     def test_progress_store_appends_every_repeated_action_event(self) -> None:
-        path = self.root / "reader-data/progress.json"
+        path = self.root / "reader-data"
         store = ProgressStore(path, {self.problem_id})
 
         store.set_status("Ada", self.problem_id, "solved")
@@ -234,7 +232,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(len(saved["events"]), 3)
 
     def test_progress_store_activity_is_newest_first_and_limited(self) -> None:
-        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store = ProgressStore(self.root, {self.problem_id})
         for status in ("solved", "revisit", "solved"):
             store.set_status("Ada", self.problem_id, status)
 
@@ -243,7 +241,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual([event["status"] for event in events], ["solved", "revisit"])
 
     def test_arbitrary_user_reads_release_their_lock_entries(self) -> None:
-        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store = ProgressStore(self.root, {self.problem_id})
 
         for index in range(1_000):
             self.assertEqual(store.get_user(f"Reader {index}"), {})
@@ -251,7 +249,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(store._user_locks, {})
 
     def test_progress_store_unseen_removes_status_without_recording_an_event(self) -> None:
-        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store = ProgressStore(self.root, {self.problem_id})
         store.set_status("Ada", self.problem_id, "solved")
 
         result = store.set_status("Ada", self.problem_id, "unseen")
@@ -260,7 +258,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(len(store.get_activity("Ada", 10)), 1)
 
     def test_progress_store_rejects_invalid_status_and_unknown_problem(self) -> None:
-        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store = ProgressStore(self.root, {self.problem_id})
 
         with self.assertRaisesRegex(ValueError, "Invalid status"):
             store.set_status("Ada", self.problem_id, "wrong")
@@ -268,7 +266,7 @@ class ProgressStoreTests(unittest.TestCase):
             store.set_status("Ada", "missing", "solved")
 
     def test_progress_store_validates_user_names(self) -> None:
-        store = ProgressStore(self.root / "progress.json", {self.problem_id})
+        store = ProgressStore(self.root, {self.problem_id})
 
         for user in ("", "  Ada  ", "x" * 81, "\ud800"):
             with self.subTest(user=user):
@@ -279,7 +277,7 @@ class ProgressStoreTests(unittest.TestCase):
                         store.set_status(user, self.problem_id, "solved")
 
     def test_progress_store_records_utc_timestamp_and_reloads(self) -> None:
-        path = self.root / "progress.json"
+        path = self.root
         store = ProgressStore(path, {self.problem_id})
 
         result = store.set_status("Ada", self.problem_id, "revisit")
@@ -293,7 +291,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(event_timestamp, timestamp)
 
     def test_progress_store_keeps_concurrent_updates(self) -> None:
-        path = self.root / "progress.json"
+        path = self.root
         store = ProgressStore(path, {self.problem_id, self.second_problem_id})
         original_write = store._write_user_document
         first_write_started = threading.Event()
@@ -332,7 +330,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(store._user_locks, {})
 
     def test_progress_store_does_not_block_different_users(self) -> None:
-        path = self.root / "progress.json"
+        path = self.root
         store = ProgressStore(path, {self.problem_id})
         original_write = store._write_user_document
         ada_write_started = threading.Event()
@@ -368,7 +366,7 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertFalse(bert_update.is_alive())
 
     def test_progress_store_rejects_corrupt_per_user_schema(self) -> None:
-        path = self.root / "progress.json"
+        path = self.root
         store = ProgressStore(path, {self.problem_id})
         user_path = user_file_path(path, "Ada")
         user_path.parent.mkdir(parents=True)
@@ -402,222 +400,8 @@ class ProgressStoreTests(unittest.TestCase):
                 with self.assertRaises(StorageCorruptionError):
                     store.get_user("Ada")
 
-    def test_legacy_migration_preflights_then_backs_up_and_creates_user_documents(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        document = {
-            "users": {
-                "Ada": {
-                    "problems": {
-                        "24176/174139": {
-                            "status": "solved",
-                            "updated_at": "2026-08-23T12:00:00Z",
-                        }
-                    }
-                },
-                "Bert": {
-                    "problems": {
-                        self.second_problem_id: {
-                            "status": "revisit",
-                            "updated_at": "2026-08-23T13:00:00Z",
-                        }
-                    }
-                },
-            }
-        }
-        original_bytes = json.dumps(document, indent=2).encode()
-        path.parent.mkdir(parents=True)
-        path.write_bytes(original_bytes)
-
-        store = ProgressStore(path, {self.problem_id, self.second_problem_id})
-
-        self.assertEqual(store.get_user("Ada")[self.problem_id]["status"], "solved")
-        self.assertEqual(store.get_activity("Ada", 10)[0]["timestamp"], "2026-08-23T12:00:00Z")
-        self.assertEqual(path.read_bytes(), original_bytes)
-        backups = list(path.parent.glob("progress.*.backup.json"))
-        self.assertEqual(len(backups), 1)
-        self.assertEqual(backups[0].read_bytes(), original_bytes)
-        marker = json.loads((path.parent / "progress-migration.json").read_text())
-        self.assertEqual(marker["state"], "complete")
-        self.assertEqual(len(list((path.parent / "users").glob("*.json"))), 2)
-
-    def test_legacy_migration_rejects_invalid_data_before_writing_anything(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        original_bytes = json.dumps(
-            {
-                "users": {
-                    "Ada": {"problems": {}},
-                    "Bert": {"problems": {"unknown:1/2@1": {}}},
-                }
-            },
-            indent=2,
-        ).encode()
-        path.parent.mkdir(parents=True)
-        path.write_bytes(original_bytes)
-
-        with self.assertRaises(StorageCorruptionError):
-            ProgressStore(path, {self.problem_id})
-
-        self.assertEqual(path.read_bytes(), original_bytes)
-        self.assertFalse((path.parent / "users").exists())
-        self.assertFalse((path.parent / "progress-migration.json").exists())
-        self.assertEqual(list(path.parent.glob("progress.*.backup.json")), [])
-
-    def test_legacy_migration_recovers_from_an_in_progress_marker_without_duplicate_events(
-        self,
-    ) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "users": {
-                        "Ada": {
-                            "problems": {
-                                self.problem_id: {
-                                    "status": "solved",
-                                    "updated_at": "2026-08-23T12:00:00Z",
-                                }
-                            }
-                        },
-                        "Bert": {
-                            "problems": {
-                                self.second_problem_id: {
-                                    "status": "revisit",
-                                    "updated_at": "2026-08-23T13:00:00Z",
-                                }
-                            }
-                        },
-                    }
-                }
-            )
-        )
-        first_store = ProgressStore(path, {self.problem_id, self.second_problem_id})
-        marker_path = path.parent / "progress-migration.json"
-        marker = json.loads(marker_path.read_text())
-        marker["state"] = "in_progress"
-        marker_path.write_text(json.dumps(marker))
-        user_file_path(path, "Bert").unlink()
-
-        recovered_store = ProgressStore(path, {self.problem_id, self.second_problem_id})
-
-        self.assertEqual(len(first_store.get_activity("Ada", 10)), 1)
-        self.assertEqual(len(recovered_store.get_activity("Ada", 10)), 1)
-        self.assertEqual(len(recovered_store.get_activity("Bert", 10)), 1)
-        self.assertEqual(json.loads(marker_path.read_text())["state"], "complete")
-        self.assertEqual(len(list(path.parent.glob("progress.*.backup.json"))), 1)
-
-    def test_legacy_migration_refuses_existing_target_without_backup_or_marker(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
-        target = user_file_path(path, "Ada")
-        target.parent.mkdir()
-        target.write_text(json.dumps({"user": "Ada", "problems": {}, "events": []}))
-
-        with self.assertRaisesRegex(StorageCorruptionError, "already exists"):
-            ProgressStore(path, {self.problem_id})
-
-        self.assertFalse((path.parent / "progress-migration.json").exists())
-        self.assertEqual(list(path.parent.glob("progress.*.backup.json")), [])
-
-    def test_completed_migration_marker_rejects_a_missing_migrated_user_file(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
-        ProgressStore(path, {self.problem_id})
-        user_file_path(path, "Ada").unlink()
-
-        with self.assertRaisesRegex(StorageCorruptionError, "missing"):
-            ProgressStore(path, {self.problem_id})
-
-    def test_legacy_backup_collision_never_removes_the_existing_backup(self) -> None:
-        class FixedDateTime(datetime):
-            @classmethod
-            def now(cls, tz: object = None) -> "FixedDateTime":
-                return cls(2026, 8, 23, 12, 34, 56, 123456)
-
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {}}))
-        backup_path = path.parent / "progress.20260823T123456.123456Z.backup.json"
-        backup_path.write_bytes(b"existing backup")
-
-        with patch("reader.server.datetime", FixedDateTime), self.assertRaises(FileExistsError):
-            ProgressStore(path, {self.problem_id})
-
-        self.assertEqual(backup_path.read_bytes(), b"existing backup")
-
-    def test_progress_store_reports_a_corrupt_migration_marker_as_storage_corruption(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {}}))
-        ProgressStore(path, {self.problem_id})
-        marker_path = path.parent / "progress-migration.json"
-        marker = json.loads(marker_path.read_text())
-        marker["targets"] = {"": "unsafe.json"}
-        marker_path.write_text(json.dumps(marker))
-
-        with self.assertRaises(StorageCorruptionError):
-            ProgressStore(path, {self.problem_id})
-
-    def test_legacy_migration_rejects_a_user_name_that_cannot_be_utf8_encoded(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {"\ud800": {"problems": {}}}}))
-
-        with self.assertRaises(StorageCorruptionError):
-            ProgressStore(path, {self.problem_id})
-
-    def test_completed_migration_marker_requires_its_matching_backup(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"users": {}}))
-        ProgressStore(path, {self.problem_id})
-        next(path.parent.glob("progress.*.backup.json")).unlink()
-
-        with self.assertRaisesRegex(StorageCorruptionError, "backup"):
-            ProgressStore(path, {self.problem_id})
-
-    def test_legacy_migration_orders_fractional_timestamps_chronologically(self) -> None:
-        path = self.root / "reader-data/progress.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "users": {
-                        "Ada": {
-                            "problems": {
-                                self.problem_id: {
-                                    "status": "solved",
-                                    "updated_at": "2026-08-23T12:00:00Z",
-                                },
-                                self.second_problem_id: {
-                                    "status": "revisit",
-                                    "updated_at": "2026-08-23T12:00:00.1Z",
-                                },
-                            }
-                        }
-                    }
-                }
-            )
-        )
-
-        store = ProgressStore(path, {self.problem_id, self.second_problem_id})
-
-        self.assertEqual(store.get_activity("Ada", 2)[0]["problem_id"], self.second_problem_id)
-
-    def test_migration_marker_rejects_a_different_compatibility_progress_file(self) -> None:
-        first_path = self.root / "first.json"
-        second_path = self.root / "second.json"
-        first_path.write_text(json.dumps({"users": {"Ada": {"problems": {}}}}))
-        second_path.write_text(json.dumps({"users": {"Bert": {"problems": {}}}}))
-        ProgressStore(first_path, {self.problem_id})
-
-        with self.assertRaisesRegex(StorageCorruptionError, "different legacy progress"):
-            ProgressStore(second_path, {self.problem_id})
-
     def test_first_user_write_fsyncs_each_new_directory_entry(self) -> None:
-        path = self.root / "reader-data/progress.json"
+        path = self.root / "reader-data"
         store = ProgressStore(path, {self.problem_id})
         synced_directories: list[Path] = []
         original_sync_directory = store._sync_directory
@@ -630,10 +414,7 @@ class ProgressStoreTests(unittest.TestCase):
 
         store.set_status("Ada", self.problem_id, "solved")
 
-        self.assertEqual(
-            synced_directories,
-            [self.root, path.parent, path.parent / "users"],
-        )
+        self.assertEqual(synced_directories, [self.root, path, path / "users"])
 
 
 class HttpApiTests(unittest.TestCase):
@@ -646,7 +427,7 @@ class HttpApiTests(unittest.TestCase):
         self._make_fixture_collection()
         self.server = create_server(
             self.root,
-            self.root / "reader-data/progress.json",
+            self.root / "reader-data",
             base_path=self.base_path,
         )
         self.server_thread = threading.Thread(target=self.server.serve_forever)
@@ -1163,7 +944,7 @@ class HttpApiTests(unittest.TestCase):
                 "status": "solved",
             },
         )
-        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path = user_file_path(self.root / "reader-data", "Ada")
         user_path.write_text("{")
 
         status, response = self.request_json("/api/progress")
@@ -1172,7 +953,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_get_returns_server_error_for_invalid_utf8_storage(self) -> None:
-        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path = user_file_path(self.root / "reader-data", "Ada")
         user_path.parent.mkdir(parents=True)
         user_path.write_bytes(b"\xff")
 
@@ -1182,7 +963,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_put_returns_server_error_for_invalid_utf8_storage(self) -> None:
-        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path = user_file_path(self.root / "reader-data", "Ada")
         user_path.parent.mkdir(parents=True)
         user_path.write_bytes(b"\xff")
 
@@ -1202,7 +983,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_get_returns_server_error_for_malformed_nested_storage(self) -> None:
-        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path = user_file_path(self.root / "reader-data", "Ada")
         user_path.parent.mkdir(parents=True)
         user_path.write_text(json.dumps({"user": "Ada", "problems": [], "events": []}))
 
@@ -1212,7 +993,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_progress_put_returns_server_error_for_invalid_persisted_record(self) -> None:
-        user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
+        user_path = user_file_path(self.root / "reader-data", "Ada")
         user_path.parent.mkdir(parents=True)
         user_path.write_text(
             json.dumps(

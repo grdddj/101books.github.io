@@ -43,9 +43,7 @@ process, but the store does not provide cross-process coordination.
 Progress records are scoped to the selected booklet and to repeated positions
 within it. Their IDs use the form `<booklet-slug>:<section>/<problem>@<occurrence>`,
 so solving a position in one booklet never marks another booklet's position
-complete. During shared-file migration, valid legacy 200 Basic Go Problems IDs
-are converted to their corresponding namespaced IDs. Each migrated current
-status also becomes one initial activity event at its existing timestamp.
+complete.
 
 ## Profiles and passwords
 
@@ -225,9 +223,8 @@ uv run python -m reader.server \
 ```
 
 `--base-path` accepts a path with or without its leading or trailing slash and
-normalizes it to one canonical prefix. `--data-dir` selects the progress
-directory; it cannot be combined with the compatibility option
-`--progress-file`.
+normalizes it to one canonical prefix. `--data-dir` selects the directory holding
+profiles, credentials, the event log and the log file.
 
 Static files and the HTML shell are read from disk on every request, so editing
 `reader/static/` takes effect immediately. Changing `reader/server.py` or
@@ -257,14 +254,6 @@ tar --create --gzip --file "$backup" --directory reader-data .
 sudo systemctl start tsumego.service
 tar --list --gzip --file "$backup" >/dev/null
 ```
-
-On the first start with a legacy shared `progress.json` in the data directory,
-the server validates the complete document before writing, creates a timestamped
-byte-for-byte backup, and migrates each profile into `users/`.
-`progress-migration.json` records the restart-safe migration state. An interrupted
-migration resumes without duplicating events; an existing target, missing completed
-target, corrupt source, or corrupt backup stops startup instead of overwriting or
-silently dropping progress.
 
 To bulk-import already-solved problems, drive `PUT /api/progress` against the
 running server rather than editing the JSON, which the process holds in memory.

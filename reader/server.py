@@ -1,5 +1,4 @@
 import argparse
-import copy
 import hashlib
 import json
 import os
@@ -57,18 +56,16 @@ class _UserLockEntry:
 
 
 class ProgressStore:
-    _STATUSES: ClassVar[frozenset[str]] = frozenset({"unseen", "solved", "revisit"})
-    _MIGRATION_VERSION: ClassVar[int] = 1
+    """One JSON document per profile, under `<data-directory>/users/`."""
 
-    def __init__(self, path: Path, problem_ids: set[str]) -> None:
-        self.legacy_path: Path = path
-        self.data_directory: Path = path.parent
-        self.users_directory: Path = self.data_directory / "users"
-        self.migration_marker_path: Path = self.data_directory / "progress-migration.json"
+    _STATUSES: ClassVar[frozenset[str]] = frozenset({"unseen", "solved", "revisit"})
+
+    def __init__(self, data_directory: Path, problem_ids: set[str]) -> None:
+        self.data_directory: Path = data_directory
+        self.users_directory: Path = data_directory / "users"
         self.problem_ids: set[str] = problem_ids
         self._user_locks: dict[str, _UserLockEntry] = {}
         self._user_locks_guard: LockType = threading.Lock()
-        self._migrate_legacy_store()
 
     def get_user(self, user: str) -> dict[str, dict[str, str]]:
         user = self._validate_user(user)
@@ -184,56 +181,6 @@ class ProgressStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
             raise StorageCorruptionError("Progress storage is corrupted") from error
-
-    def _migrate_legacy_problem_ids(self, data: object) -> None:
-        if not isinstance(data, dict) or set(data) != {"users"}:
-            return
-        users = data["users"]
-        if not isinstance(users, dict):
-            return
-
-        prefix = "200-basic-go-problems:"
-        legacy_ids = {
-            problem_id.removeprefix(prefix).removesuffix("@1")
-            for problem_id in self.problem_ids
-            if problem_id.startswith(prefix) and problem_id.endswith("@1")
-        }
-        for user_data in users.values():
-            if not isinstance(user_data, dict) or set(user_data) != {"problems"}:
-                continue
-            problems = user_data["problems"]
-            if not isinstance(problems, dict):
-                continue
-            for problem_id in list(problems):
-                if not isinstance(problem_id, str):
-                    continue
-                if ":" in problem_id:
-                    continue
-                if problem_id not in legacy_ids:
-                    raise StorageCorruptionError("Progress storage is corrupted")
-                namespaced_id = collection_problem_id("200-basic-go-problems", problem_id, 1)
-                if namespaced_id in problems:
-                    raise StorageCorruptionError("Progress storage is corrupted")
-                self._validate_record_data(problems[problem_id])
-                problems[namespaced_id] = problems.pop(problem_id)
-
-    def _validate_legacy_data(self, data: object) -> None:
-        if not isinstance(data, dict) or set(data) != {"users"}:
-            raise StorageCorruptionError("Progress storage is corrupted")
-        users = data["users"]
-        if not isinstance(users, dict):
-            raise StorageCorruptionError("Progress storage is corrupted")
-
-        for user, user_data in users.items():
-            if not isinstance(user, str) or not self._is_valid_persisted_user(user):
-                raise StorageCorruptionError("Progress storage is corrupted")
-            if not isinstance(user_data, dict) or set(user_data) != {"problems"}:
-                raise StorageCorruptionError("Progress storage is corrupted")
-            problems = user_data["problems"]
-            if not isinstance(problems, dict):
-                raise StorageCorruptionError("Progress storage is corrupted")
-            for problem_id, record in problems.items():
-                self._validate_record(problem_id, record)
 
     def _validate_user_document(self, data: object, expected_user: str) -> None:
         if not isinstance(data, dict) or set(data) != {"user", "problems", "events"}:
@@ -368,205 +315,6 @@ class ProgressStore:
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
-
-    def _migrate_legacy_store(self) -> None:
-        if self.migration_marker_path.exists():
-            self._resume_migration()
-            return
-        if not self.legacy_path.exists():
-            return
-
-        source_bytes, user_documents = self._preflight_legacy_source()
-        for user in user_documents:
-            if self._user_path(user).exists():
-                raise StorageCorruptionError(f"Per-user progress target already exists for {user}")
-
-        backup_path = self._write_legacy_backup(source_bytes)
-        marker: dict[str, object] = {
-            "version": self._MIGRATION_VERSION,
-            "state": "in_progress",
-            "source": self.legacy_path.name,
-            "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
-            "backup": backup_path.name,
-            "targets": {user: self._user_path(user).name for user in user_documents},
-        }
-        self._atomic_write_json(self.migration_marker_path, marker)
-        self._finish_migration(marker, user_documents)
-
-    def _resume_migration(self) -> None:
-        marker = self._read_json(self.migration_marker_path)
-        self._validate_migration_marker(marker)
-        if not isinstance(marker, dict):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if marker["source"] != self.legacy_path.name:
-            raise StorageCorruptionError(
-                "Migration marker belongs to a different legacy progress file"
-            )
-        if marker["state"] == "complete":
-            self._validate_completed_migration_targets(marker)
-            return
-
-        source_bytes, user_documents = self._preflight_legacy_source()
-        if hashlib.sha256(source_bytes).hexdigest() != marker["source_sha256"]:
-            raise StorageCorruptionError("Legacy progress changed during migration")
-        backup_name = marker["backup"]
-        targets = marker["targets"]
-        if not isinstance(backup_name, str) or not isinstance(targets, dict):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        backup_path = self.data_directory / backup_name
-        try:
-            backup_bytes = backup_path.read_bytes()
-        except OSError as error:
-            raise StorageCorruptionError("Legacy progress backup is unavailable") from error
-        if backup_bytes != source_bytes:
-            raise StorageCorruptionError("Legacy progress backup does not match its source")
-        expected_targets = {user: self._user_path(user).name for user in user_documents}
-        if targets != expected_targets:
-            raise StorageCorruptionError("Progress storage is corrupted")
-        self._finish_migration(marker, user_documents)
-
-    def _preflight_legacy_source(self) -> tuple[bytes, dict[str, dict[str, object]]]:
-        try:
-            source_bytes = self.legacy_path.read_bytes()
-            data = json.loads(source_bytes.decode("utf-8"))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
-            raise StorageCorruptionError("Legacy progress storage is corrupted") from error
-        proposed_data = copy.deepcopy(data)
-        self._migrate_legacy_problem_ids(proposed_data)
-        self._validate_legacy_data(proposed_data)
-        if not isinstance(proposed_data, dict) or not isinstance(proposed_data["users"], dict):
-            raise StorageCorruptionError("Legacy progress storage is corrupted")
-
-        user_documents: dict[str, dict[str, object]] = {}
-        for user, legacy_user_data in proposed_data["users"].items():
-            if not isinstance(user, str) or not isinstance(legacy_user_data, dict):
-                raise StorageCorruptionError("Legacy progress storage is corrupted")
-            problems = legacy_user_data["problems"]
-            if not isinstance(problems, dict):
-                raise StorageCorruptionError("Legacy progress storage is corrupted")
-            events: list[dict[str, str]] = []
-            for problem_id, record in problems.items():
-                if not isinstance(problem_id, str) or not isinstance(record, dict):
-                    raise StorageCorruptionError("Legacy progress storage is corrupted")
-                status = record["status"]
-                timestamp = record["updated_at"]
-                if not isinstance(status, str) or not isinstance(timestamp, str):
-                    raise StorageCorruptionError("Legacy progress storage is corrupted")
-                events.append({"problem_id": problem_id, "status": status, "timestamp": timestamp})
-            events.sort(
-                key=lambda event: (
-                    self._parse_utc_timestamp(event["timestamp"]),
-                    event["problem_id"],
-                )
-            )
-            user_documents[user] = {
-                "user": user,
-                "problems": copy.deepcopy(problems),
-                "events": events,
-            }
-        return source_bytes, user_documents
-
-    def _write_legacy_backup(self, source_bytes: bytes) -> Path:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        backup_path = self.data_directory / f"progress.{timestamp}.backup.json"
-        temporary_path: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=self.data_directory,
-                prefix=f".{backup_path.name}.",
-                delete=False,
-            ) as backup_file:
-                temporary_path = backup_file.name
-                backup_file.write(source_bytes)
-                backup_file.flush()
-                os.fsync(backup_file.fileno())
-            os.link(temporary_path, backup_path)
-            self._sync_directory(self.data_directory)
-        finally:
-            if temporary_path is not None:
-                Path(temporary_path).unlink(missing_ok=True)
-        return backup_path
-
-    def _validate_completed_migration_targets(self, marker: dict[str, object]) -> None:
-        backup_name = marker["backup"]
-        source_digest = marker["source_sha256"]
-        if not isinstance(backup_name, str) or not isinstance(source_digest, str):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        try:
-            backup_bytes = (self.data_directory / backup_name).read_bytes()
-        except OSError as error:
-            raise StorageCorruptionError("Legacy progress backup is unavailable") from error
-        if hashlib.sha256(backup_bytes).hexdigest() != source_digest:
-            raise StorageCorruptionError("Legacy progress backup is corrupted")
-
-        targets = marker["targets"]
-        if not isinstance(targets, dict):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        for user in targets:
-            if not isinstance(user, str):
-                raise StorageCorruptionError("Progress storage is corrupted")
-            target = self._user_path(user)
-            if not target.exists():
-                raise StorageCorruptionError(f"Migrated progress target is missing for {user}")
-            self._validate_user_document(self._read_json(target), user)
-
-    def _finish_migration(
-        self, marker: dict[str, object], user_documents: dict[str, dict[str, object]]
-    ) -> None:
-        for user, expected_document in user_documents.items():
-            target = self._user_path(user)
-            if target.exists():
-                existing_document = self._read_json(target)
-                self._validate_user_document(existing_document, user)
-                if existing_document != expected_document:
-                    raise StorageCorruptionError(
-                        f"Per-user progress target does not match migration source for {user}"
-                    )
-                continue
-            self._write_user_document(user, expected_document)
-        marker["state"] = "complete"
-        self._atomic_write_json(self.migration_marker_path, marker)
-
-    def _validate_migration_marker(self, marker: object) -> None:
-        if not isinstance(marker, dict) or set(marker) != {
-            "version",
-            "state",
-            "source",
-            "source_sha256",
-            "backup",
-            "targets",
-        }:
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if marker["version"] != self._MIGRATION_VERSION:
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if marker["state"] not in {"in_progress", "complete"}:
-            raise StorageCorruptionError("Progress storage is corrupted")
-        source_name = marker["source"]
-        source_digest = marker["source_sha256"]
-        backup_name = marker["backup"]
-        targets = marker["targets"]
-        if (
-            not isinstance(source_name, str)
-            or not source_name
-            or Path(source_name).name != source_name
-        ):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if not isinstance(source_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", source_digest):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if (
-            not isinstance(backup_name, str)
-            or Path(backup_name).name != backup_name
-            or not re.fullmatch(r"progress\.\d{8}T\d{6}\.\d{6}Z\.backup\.json", backup_name)
-        ):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        if not isinstance(targets, dict):
-            raise StorageCorruptionError("Progress storage is corrupted")
-        for user, filename in targets.items():
-            if not isinstance(user, str) or not self._is_valid_persisted_user(user):
-                raise StorageCorruptionError("Progress storage is corrupted")
-            if not isinstance(filename, str) or filename != self._user_path(user).name:
-                raise StorageCorruptionError("Progress storage is corrupted")
 
 
 def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
@@ -795,7 +543,7 @@ class ReaderServer:
 
 def create_server(
     repository_root: Path,
-    progress_path: Path,
+    data_directory: Path,
     host: str = "127.0.0.1",
     port: int = 0,
     base_path: str = "",
@@ -805,13 +553,13 @@ def create_server(
     from reader.api import create_app
 
     normalized_base_path = normalize_base_path(base_path)
-    configure_logging(progress_path.parent)
+    configure_logging(data_directory)
     collections = load_collections(repository_root)
     progress_store = ProgressStore(
-        progress_path,
+        data_directory,
         {problem.problem_id for collection in collections for problem in collection.problems},
     )
-    event_log = EventLog(progress_path.parent)
+    event_log = EventLog(data_directory)
     app = create_app(
         collections=collections,
         activity_context={
@@ -820,7 +568,7 @@ def create_server(
             for problem in collection.problems
         },
         progress_store=progress_store,
-        auth_store=AuthStore(progress_path.parent),
+        auth_store=AuthStore(data_directory),
         event_log=event_log,
         base_path=normalized_base_path,
         static_directory=Path(__file__).parent / "static",
@@ -833,25 +581,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    storage_arguments = parser.add_mutually_exclusive_group()
-    storage_arguments.add_argument("--progress-file", type=Path)
-    storage_arguments.add_argument("--data-dir", type=Path)
+    parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--base-path", default="")
     arguments = parser.parse_args()
 
     repository_root = Path(__file__).resolve().parents[1]
-    progress_path = (
-        arguments.progress_file
-        or (arguments.data_dir / "progress.json" if arguments.data_dir else None)
-        or repository_root / "reader-data/progress.json"
-    )
+    data_directory = arguments.data_dir or repository_root / "reader-data"
     try:
         base_path = normalize_base_path(arguments.base_path)
     except ValueError as error:
         parser.error(str(error))
     server = create_server(
         repository_root,
-        progress_path,
+        data_directory,
         arguments.host,
         arguments.port,
         base_path,

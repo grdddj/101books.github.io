@@ -426,11 +426,6 @@ function stripBasePath(pathname) {
   return pathname.slice(basePath.length);
 }
 
-function getCollectionSlugFromPath() {
-  const path = getCollectionPath();
-  return path.kind === "collection" ? path.slug : null;
-}
-
 function getStatusTotals(problems) {
   return problems.reduce(
     (totals, { id }) => {

@@ -170,7 +170,6 @@ globalThis.readerTestApi = {
   getCollectionPath: typeof getCollectionPath === "function" ? getCollectionPath : undefined,
   handleKeydown: typeof handleKeydown === "function" ? handleKeydown : undefined,
   handleWheel: typeof handleWheel === "function" ? handleWheel : undefined,
-  getCollectionSlugFromPath: typeof getCollectionSlugFromPath === "function" ? getCollectionSlugFromPath : undefined,
   getCurrentIndex: () => currentIndex,
   getSavedCollection: typeof getSavedCollection === "function" ? getSavedCollection : undefined,
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
@@ -349,7 +348,7 @@ test("a collection URL selects its catalog entry on startup", async () => {
 
   await context.readerTestApi.startReader();
 
-  assert.equal(context.readerTestApi.getCollectionSlugFromPath(), "test-collection");
+  assert.equal(context.readerTestApi.getCollectionPath().slug, "test-collection");
   assert.equal(elements.get("#collection-title").textContent, "Test collection");
 });
 

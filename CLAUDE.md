@@ -141,10 +141,33 @@ Cache); there is no API token on this machine.
   tokens. Identity comes from the token, so API routes take no `user`
   parameter - never reintroduce one. A profile holding progress but no password
   is refused at login until claimed with
-  `python3 -m reader.admin set-password <name>`.
+  `uv run python -m reader.admin set-password <name>`.
 - **The service worker rebuilds requests** to force revalidation, so it must
   copy their headers across; forgetting that stripped `Authorization` and made
   every API call 401. `tests/test_browser_service_worker.mjs` guards it.
+
+## Logs
+
+`reader/logs.py` points the root logger at stderr *and* at a rotating
+`reader-data/logs/reader.log` (5 MB x 5). uvicorn runs with `log_config=None`
+precisely so that its access and error loggers keep propagating to the root and
+land in that file too; restoring uvicorn's own logging config would silently
+empty it.
+
+Unhandled exceptions go through `UnhandledErrorMiddleware`, which logs the
+traceback with the request that caused it, records a `request.failed` event, and
+answers `{"error": "The reader failed to handle that request."}` with a 500. The
+client is deliberately told nothing else: the message could contain anything.
+A plain `@app.exception_handler(Exception)` was not enough - Starlette re-raises
+after calling it, so the traceback is logged a second time *after* the response
+has gone out, which makes the log racy to read.
+
+```bash
+tail -f reader-data/logs/reader.log
+```
+
+Opening the file is best effort: a data directory that cannot be written costs
+the log, never the request.
 
 ## Event log
 
@@ -158,7 +181,7 @@ turn into a failed request.
 - Client-only actions (navigation, dialog opens, problem views) are **not**
   recorded - there is no client events endpoint by design. `DELETE /api/session`
   is the one exception, and exists solely so sign-out is observable.
-- Read it with `python3 -m reader.admin metrics [--days N]`.
+- Read it with `uv run python -m reader.admin metrics [--days N]`.
 
 ## Progress data
 

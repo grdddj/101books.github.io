@@ -18,6 +18,7 @@ from typing import ClassVar
 import uvicorn
 
 from reader.auth import AuthStore
+from reader.logs import configure_logging
 from reader.metrics import EventLog
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
@@ -773,7 +774,9 @@ class ReaderServer:
         self.progress_store = progress_store
         self._socket = socket.create_server((host, port))
         self.server_address: tuple[str, int] = self._socket.getsockname()
-        self._server = uvicorn.Server(uvicorn.Config(app, log_level="info"))
+        # log_config=None: uvicorn's own dictConfig detaches its loggers from
+        # the root logger, which is exactly where the file handler lives.
+        self._server = uvicorn.Server(uvicorn.Config(app, log_level="info", log_config=None))
         self._stopped = threading.Event()
 
     def serve_forever(self) -> None:
@@ -802,6 +805,7 @@ def create_server(
     from reader.api import create_app
 
     normalized_base_path = normalize_base_path(base_path)
+    configure_logging(progress_path.parent)
     collections = load_collections(repository_root)
     progress_store = ProgressStore(
         progress_path,

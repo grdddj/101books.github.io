@@ -8,8 +8,10 @@ that should drift because a framework default changed.
 """
 
 import json
+import logging
 import mimetypes
 import re
+from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +19,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reader.auth import AuthError, AuthStore
 from reader.metrics import EventLog
@@ -28,6 +31,47 @@ if TYPE_CHECKING:
 # routes: the server has no opinion on them beyond serving the shell.
 COLLECTION_ROUTE = re.compile(r"(?:[^/]+(?:/\d+)?)?")
 DEFAULT_ACTIVITY_LIMIT = 50
+
+logger = logging.getLogger(__name__)
+
+
+class UnhandledErrorMiddleware:
+    """Turn anything the routes did not predict into one logged JSON 500.
+
+    A plain `@app.exception_handler(Exception)` would do most of this, but
+    Starlette re-raises afterwards, so the traceback is logged a second time by
+    the server - after the client already has its answer, which makes the log
+    racy to read. Catching here instead gives exactly one record, written before
+    the response goes out.
+
+    Once a response has started there is nothing left to send, so the exception
+    is passed on for the server to deal with.
+    """
+
+    def __init__(self, app: ASGIApp, *, on_error: "Callable[[Request, Exception], Response]"):
+        self.app = app
+        self.on_error = on_error
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started = False
+
+        async def watch(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, watch)
+        except Exception as exception:
+            if started:
+                raise
+            response = self.on_error(Request(scope, receive), exception)
+            await response(scope, receive, send)
 
 
 def create_app(
@@ -117,6 +161,33 @@ def create_app(
         # Nothing here answers to a browser directly, so even a framework-level
         # 404 should look like the reader's own errors.
         return JSONResponse({"error": exception.detail}, status_code=exception.status_code)
+
+    def handle_unhandled(request: Request, exception: Exception) -> JSONResponse:
+        """Answer anything nobody predicted with JSON, and write it down.
+
+        Every failure a route expects already has its own status, so reaching
+        here means a bug. The client is told nothing about it - the message
+        could be anything, including something it should not see - while the log
+        gets the traceback and the request that produced it.
+        """
+        logger.error(
+            "Unhandled %s from %s %s (client %s)",
+            type(exception).__name__,
+            request.method,
+            request.url.path,
+            client_ip(request),
+            exc_info=exception,
+        )
+        record(
+            request,
+            "request.failed",
+            route=request.url.path,
+            method=request.method,
+            error=type(exception).__name__,
+        )
+        return error(HTTPStatus.INTERNAL_SERVER_ERROR, "The reader failed to handle that request.")
+
+    app.add_middleware(UnhandledErrorMiddleware, on_error=handle_unhandled)
 
     def reader_shell() -> Response:
         try:

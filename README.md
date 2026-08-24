@@ -70,9 +70,28 @@ A profile that already holds progress but has no password must be claimed
 deliberately, or the first stranger to guess the name would inherit it:
 
 ```bash
-python3 -m reader.admin --data-dir reader-data list
-python3 -m reader.admin --data-dir reader-data set-password jirka
+uv run python -m reader.admin --data-dir reader-data list
+uv run python -m reader.admin --data-dir reader-data set-password jirka
 ```
+
+## Logs
+
+The server logs to stderr - so `journalctl -u tsumego.service` sees it - and to
+a rotating `reader-data/logs/reader.log` (5 MB, five files kept), which is the
+copy you can read without sudo and that survives a journal rotation. Both carry
+uvicorn's request log and anything the reader itself reports.
+
+An error nobody predicted answers with a plain
+`{"error": "The reader failed to handle that request."}` and a 500 - the client
+is told nothing more, because the message could contain anything - while the log
+gets the traceback together with the method, path and address that produced it,
+and the event log gets a `request.failed` entry.
+
+```bash
+tail -f reader-data/logs/reader.log
+```
+
+Failing to open the log file costs the log, never the request.
 
 ## Event log
 
@@ -95,8 +114,8 @@ is nothing to revoke; it exists so that signing out is visible at all, since it
 would otherwise be a purely local change with no request to observe.
 
 ```bash
-python3 -m reader.admin --data-dir reader-data metrics
-python3 -m reader.admin --data-dir reader-data metrics --days 7
+uv run python -m reader.admin --data-dir reader-data metrics
+uv run python -m reader.admin --data-dir reader-data metrics --days 7
 ```
 
 The report summarises events by type, sign-ins per profile, rejected sign-ins

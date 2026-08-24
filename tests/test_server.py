@@ -653,6 +653,7 @@ class HttpApiTests(unittest.TestCase):
         self.server_thread.start()
         self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.base_url = f"{self.origin}{self.base_path}"
+        self.log_file = self.root / "reader-data/logs/reader.log"
         self.token = self.sign_in("Ada")
 
     def tearDown(self) -> None:
@@ -889,11 +890,40 @@ class HttpApiTests(unittest.TestCase):
             "/api/progress",
             {"problem_id": "200-basic-go-problems:24176/174140@1", "status": "solved"},
         )
+        self.request_json("/api/session", method="POST", data=b"{")
 
-        written = json.dumps(self.recorded_events())
+        written = json.dumps(self.recorded_events()) + self.log_file.read_text(encoding="utf-8")
 
         self.assertNotIn(self.TEST_PASSWORD, written)
         self.assertNotIn(self.token, written)
+
+    def test_requests_are_logged_to_a_file_in_the_data_directory(self) -> None:
+        self.get_json("/api/collections")
+
+        self.assertIn("/api/collections", self.log_file.read_text(encoding="utf-8"))
+
+    def test_an_unexpected_failure_answers_json_and_lands_in_the_log(self) -> None:
+        # Everything the routes expect is already caught and turned into a
+        # specific status; this is the case nobody predicted.
+        def explode(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("nobody saw this coming")
+
+        self.server.progress_store.get_activity = explode
+
+        status, response = self.request_json("/api/activity")
+        logged = self.log_file.read_text(encoding="utf-8")
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", response)
+        # The message must not leak the failure to the client, but the log has
+        # to be enough to find it.
+        self.assertNotIn("nobody saw this coming", str(response["error"]))
+        self.assertIn("nobody saw this coming", logged)
+        self.assertIn("/api/activity", logged)
+        self.assertIn(
+            "request.failed",
+            [str(entry["event"]) for entry in self.recorded_events()],
+        )
 
     def test_signing_out_is_recorded_even_though_tokens_are_stateless(self) -> None:
         status, _ = self.request_json("/api/session", method="DELETE")

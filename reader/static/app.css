@@ -216,7 +216,8 @@ h1 {
   display: grid;
   grid-template-columns: repeat(var(--board-columns), minmax(0, 1fr));
   grid-template-rows: repeat(var(--board-rows), minmax(0, 1fr));
-  width: min(100%, calc(100vh - 13rem), 42rem);
+  width: min(100%, calc(100vh - 17.5rem), 42rem);
+  max-height: calc(100vh - 20.5rem);
   aspect-ratio: var(--board-columns) / var(--board-rows);
   overflow: hidden;
   border: 1px solid #735026;
@@ -259,9 +260,18 @@ h1 {
   box-shadow: 0 0.08rem 0.14rem rgb(0 0 0 / 42%);
 }
 
+/* Solved is pressed once per problem; the other three are occasional. It gets
+   its own full-width row so it can be hit with a thumb without looking. */
 .reader-controls {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: min(100%, 42rem);
+  margin-inline: auto;
+}
+
+.reader-controls__secondary {
+  display: flex;
   justify-content: center;
   gap: 0.55rem;
 }
@@ -274,6 +284,32 @@ h1 {
   border-radius: 0.35rem;
   background: #fffdf9;
   cursor: pointer;
+}
+
+.reader-controls__secondary button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+#solved {
+  min-height: 3.75rem;
+  border-color: #17603c;
+  background: #1f7a4d;
+  color: #ffffff;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+#solved:hover:not(:disabled) {
+  background: #186139;
+}
+
+/* The generic is-selected treatment is a light green fill, which would be
+   invisible against the green button, so Solved darkens instead. */
+#solved.is-selected {
+  border-color: #0c3320;
+  background: #12492f;
+  color: #ffffff;
 }
 
 .reader-controls button:hover:not(:disabled) {
@@ -299,6 +335,37 @@ h1 {
   }
 
   .goban {
-    width: min(100%, calc(100vh - 10.5rem), 42rem);
+    width: min(100%, calc(100vh - 15rem), 42rem);
+  }
+}
+
+/* On a narrow screen the booklet title and the progress line each wrapped to
+   three rows, and the header alone ate 156px - enough to push Solved below the
+   fold. Stacking the header and trimming its type keeps the whole reader on
+   one screen. */
+@media (max-width: 26rem) {
+  .header-content {
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    padding: 0.5rem 0;
+  }
+
+  .header-content > div:first-child {
+    flex: 1 0 100%;
+  }
+
+  .header-content > button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  h1 {
+    font-size: 1.05rem;
+  }
+
+  #progress-summary {
+    font-size: 0.8rem;
   }
 }

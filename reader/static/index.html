@@ -83,10 +83,12 @@
       ></div>
       <p id="status-feedback" role="status" aria-live="polite"></p>
       <nav class="reader-controls" aria-label="Problem controls">
-        <button id="previous" type="button" disabled>Previous</button>
         <button id="solved" type="button" aria-pressed="false" disabled>Solved</button>
-        <button id="revisit" type="button" aria-pressed="false" disabled>Revisit</button>
-        <button id="next" type="button" disabled>Next</button>
+        <div class="reader-controls__secondary">
+          <button id="previous" type="button" disabled>Previous</button>
+          <button id="revisit" type="button" aria-pressed="false" disabled>Revisit</button>
+          <button id="next" type="button" disabled>Next</button>
+        </div>
       </nav>
     </main>
   </body>

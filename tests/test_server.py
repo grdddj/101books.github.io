@@ -653,6 +653,7 @@ class HttpApiTests(unittest.TestCase):
         self.server_thread.start()
         self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.base_url = f"{self.origin}{self.base_path}"
+        self.token = self.sign_in("Ada")
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -731,14 +732,13 @@ class HttpApiTests(unittest.TestCase):
         self.put_json(
             "/api/progress",
             {
-                "user": "Ada",
                 "problem_id": "200-basic-go-problems:24176/174140@1",
                 "status": "solved",
                 "duration_seconds": 42,
             },
         )
 
-        events = self.get_json("/api/activity?user=Ada")["events"]
+        events = self.get_json("/api/activity")["events"]
 
         self.assertEqual(events[0]["duration_seconds"], 42)
 
@@ -746,13 +746,12 @@ class HttpApiTests(unittest.TestCase):
         self.put_json(
             "/api/progress",
             {
-                "user": "Ada",
                 "problem_id": "200-basic-go-problems:24176/174140@1",
                 "status": "solved",
             },
         )
 
-        events = self.get_json("/api/activity?user=Ada")["events"]
+        events = self.get_json("/api/activity")["events"]
 
         self.assertNotIn("duration_seconds", events[0])
 
@@ -764,7 +763,6 @@ class HttpApiTests(unittest.TestCase):
                     method="PUT",
                     data=json.dumps(
                         {
-                            "user": "Ada",
                             "problem_id": "200-basic-go-problems:24176/174140@1",
                             "status": "solved",
                             "duration_seconds": duration,
@@ -774,6 +772,88 @@ class HttpApiTests(unittest.TestCase):
                 )
 
                 self.assertEqual(status, 400)
+
+    def session(self, **payload: object) -> tuple[int, dict[str, object]]:
+        return self.request_json(
+            "/api/session",
+            method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+
+    def test_a_mistyped_name_is_reported_rather_than_quietly_created(self) -> None:
+        status, response = self.session(user="Grase", password=self.TEST_PASSWORD)
+
+        self.assertEqual(status, 404)
+        self.assertIn("error", response)
+
+        # And nothing was created behind the report.
+        status, _ = self.session(user="Grase", password=self.TEST_PASSWORD)
+        self.assertEqual(status, 404)
+
+    def test_creating_a_profile_takes_an_explicit_second_request(self) -> None:
+        status, response = self.session(user="Grace", password=self.TEST_PASSWORD, create=True)
+
+        self.assertEqual(status, 200)
+        self.assertIs(response["created"], True)
+
+        status, response = self.session(user="Grace", password=self.TEST_PASSWORD)
+        self.assertEqual(status, 200)
+        self.assertIs(response["created"], False)
+
+    def test_a_wrong_password_is_refused(self) -> None:
+        status, response = self.session(user="Ada", password="a different password")
+
+        self.assertEqual(status, 401)
+        self.assertIn("error", response)
+
+    def test_a_weak_password_cannot_create_a_profile(self) -> None:
+        status, _ = self.session(user="Grace", password="short", create=True)
+
+        self.assertEqual(status, 400)
+
+    def test_authenticated_routes_refuse_an_absent_or_forged_token(self) -> None:
+        for headers in [{}, {"Authorization": "Bearer nonsense"}, {"Authorization": self.token}]:
+            for path in ["/api/progress", "/api/activity"]:
+                with self.subTest(headers=headers, path=path):
+                    status, _ = self.request_json(path, headers=headers, authenticated=False)
+
+                    self.assertEqual(status, 401)
+
+    def test_progress_is_scoped_to_the_token_not_to_a_requested_name(self) -> None:
+        # Naming somebody else in the body must not write to their progress.
+        other = self.sign_in("Grace")
+        self.put_json(
+            "/api/progress",
+            {
+                "user": "Grace",
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+            },
+        )
+
+        status, mine = self.request_json("/api/progress")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(mine["problems"]), 1)
+
+        status, theirs = self.request_json(
+            "/api/progress", headers={"Authorization": f"Bearer {other}"}, authenticated=False
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(theirs["problems"], {})
+
+    def test_a_profile_holding_progress_must_be_claimed_before_it_can_be_logged_into(self) -> None:
+        # "Ada" already has a credential from setUp, so use a name that has
+        # progress written directly by the store instead.
+        self.server.RequestHandlerClass.progress_store.set_status(
+            "Bert", "200-basic-go-problems:24176/174140@1", "solved"
+        )
+
+        status, response = self.session(user="Bert", password=self.TEST_PASSWORD, create=True)
+
+        self.assertEqual(status, 409)
+        self.assertIn("claim", str(response["error"]).lower())
 
     def test_head_matches_get_routes_without_sending_a_body(self) -> None:
         for path in ["/", "/app.js", "/api/collections", "/healthz"]:
@@ -827,33 +907,37 @@ class HttpApiTests(unittest.TestCase):
         self.put_json(
             "/api/progress",
             {
-                "user": "Ada",
                 "problem_id": "200-basic-go-problems:24176/174140@1",
                 "status": "revisit",
             },
         )
 
-        response = self.get_json("/api/progress?user=Ada")
+        response = self.get_json("/api/progress")
 
         self.assertEqual(
             response["problems"]["200-basic-go-problems:24176/174140@1"]["status"], "revisit"
         )
 
     def test_user_specific_responses_disable_caching(self) -> None:
-        for path in ("/api/progress?user=Ada", "/api/activity?user=Ada"):
-            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+        for path in ("/api/progress", "/api/activity"):
+            request = Request(
+                f"{self.base_url}{path}", headers={"Authorization": f"Bearer {self.token}"}
+            )
+            with self.subTest(path=path), urlopen(request) as response:
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
 
         request = Request(
             f"{self.base_url}/api/progress",
             data=json.dumps(
                 {
-                    "user": "Ada",
                     "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved",
                 }
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+            },
             method="PUT",
         )
         with urlopen(request) as response:
@@ -864,13 +948,12 @@ class HttpApiTests(unittest.TestCase):
             self.put_json(
                 "/api/progress",
                 {
-                    "user": "Ada",
                     "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": status,
                 },
             )
 
-        response = self.get_json("/api/activity?user=Ada&limit=2")
+        response = self.get_json("/api/activity?limit=2")
 
         self.assertEqual([event["status"] for event in response["events"]], ["solved", "revisit"])
         event = response["events"][0]
@@ -886,25 +969,23 @@ class HttpApiTests(unittest.TestCase):
             self.put_json(
                 "/api/progress",
                 {
-                    "user": "Ada",
                     "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved" if index % 2 == 0 else "revisit",
                 },
             )
 
-        response = self.get_json("/api/activity?user=Ada")
+        response = self.get_json("/api/activity")
 
         self.assertEqual(len(response["events"]), 50)
 
     def test_activity_endpoint_rejects_invalid_queries(self) -> None:
         for path in (
-            "/api/activity",
-            "/api/activity?user=Ada&user=Bert",
-            "/api/activity?user=Ada&limit=",
-            "/api/activity?user=Ada&limit=nope",
-            "/api/activity?user=Ada&limit=0",
-            "/api/activity?user=Ada&limit=101",
-            "/api/activity?user=Ada&limit=1&limit=2",
+            "/api/activity?user=Bert",
+            "/api/activity?limit=",
+            "/api/activity?limit=nope",
+            "/api/activity?limit=0",
+            "/api/activity?limit=101",
+            "/api/activity?limit=1&limit=2",
         ):
             with self.subTest(path=path):
                 status, response = self.request_json(path)
@@ -928,7 +1009,6 @@ class HttpApiTests(unittest.TestCase):
         self.put_json(
             "/api/progress",
             {
-                "user": "Ada",
                 "problem_id": "200-basic-go-problems:24176/174140@1",
                 "status": "solved",
             },
@@ -936,7 +1016,7 @@ class HttpApiTests(unittest.TestCase):
         user_path = user_file_path(self.root / "reader-data/progress.json", "Ada")
         user_path.write_text("{")
 
-        status, response = self.request_json("/api/progress?user=Ada")
+        status, response = self.request_json("/api/progress")
 
         self.assertEqual(status, 500)
         self.assertIn("error", response)
@@ -946,7 +1026,7 @@ class HttpApiTests(unittest.TestCase):
         user_path.parent.mkdir(parents=True)
         user_path.write_bytes(b"\xff")
 
-        status, response = self.request_json("/api/progress?user=Ada")
+        status, response = self.request_json("/api/progress")
 
         self.assertEqual(status, 500)
         self.assertIn("error", response)
@@ -961,7 +1041,6 @@ class HttpApiTests(unittest.TestCase):
             method="PUT",
             data=json.dumps(
                 {
-                    "user": "Ada",
                     "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved",
                 }
@@ -977,7 +1056,7 @@ class HttpApiTests(unittest.TestCase):
         user_path.parent.mkdir(parents=True)
         user_path.write_text(json.dumps({"user": "Ada", "problems": [], "events": []}))
 
-        status, response = self.request_json("/api/progress?user=Ada")
+        status, response = self.request_json("/api/progress")
 
         self.assertEqual(status, 500)
         self.assertIn("error", response)
@@ -988,7 +1067,6 @@ class HttpApiTests(unittest.TestCase):
         user_path.write_text(
             json.dumps(
                 {
-                    "user": "Ada",
                     "problems": {
                         "200-basic-go-problems:24176/174140@1": {
                             "status": "unseen",
@@ -1005,7 +1083,6 @@ class HttpApiTests(unittest.TestCase):
             method="PUT",
             data=json.dumps(
                 {
-                    "user": "Ada",
                     "problem_id": "200-basic-go-problems:24176/174140@1",
                     "status": "solved",
                 }
@@ -1062,14 +1139,33 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         return response
 
+    TEST_PASSWORD = "correct horse battery"
+
+    def sign_in(self, user: str) -> str:
+        status, response = self.request_json(
+            "/api/session",
+            method="POST",
+            data=json.dumps(
+                {"user": user, "password": self.TEST_PASSWORD, "create": True}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            authenticated=False,
+        )
+        self.assertEqual(status, 200, response)
+        return response["token"]
+
     def request_json(
         self,
         path: str,
         method: str = "GET",
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
+        authenticated: bool = True,
     ) -> tuple[int, dict[str, object] | list[dict[str, object]]]:
-        request = Request(f"{self.base_url}{path}", data=data, headers=headers or {}, method=method)
+        headers = dict(headers or {})
+        if authenticated and getattr(self, "token", None):
+            headers.setdefault("Authorization", f"Bearer {self.token}")
+        request = Request(f"{self.base_url}{path}", data=data, headers=headers, method=method)
         try:
             with urlopen(request) as response:
                 return response.status, json.loads(response.read())

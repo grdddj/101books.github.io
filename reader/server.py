@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from reader.auth import AuthError, AuthStore
+
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
 # A problem left open overnight says nothing about how long it was worked on,
 # so anything beyond an hour is rejected rather than recorded.
@@ -131,6 +133,10 @@ class ProgressStore:
                 raise StorageCorruptionError("Progress storage is corrupted")
             return [dict(event) for event in reversed(events[-limit:])]
 
+    def normalize_user(self, user: object) -> str:
+        # An empty name is invalid, so a non-string reaches the same rejection.
+        return self._validate_user(user if isinstance(user, str) else "")
+
     def _validate_user(self, user: str) -> str:
         normalized = user.strip()
         if not self._is_valid_persisted_user(normalized):
@@ -153,6 +159,9 @@ class ProgressStore:
                 entry.references -= 1
                 if entry.references == 0:
                     del self._user_locks[user]
+
+    def has_user(self, user: str) -> bool:
+        return self._user_path(self._validate_user(user)).exists()
 
     def _user_path(self, user: str) -> Path:
         digest = hashlib.sha256(user.encode("utf-8")).hexdigest()
@@ -745,6 +754,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
     collections: ClassVar[list[Collection]]
     activity_context: ClassVar[dict[str, tuple[str, str, int]]]
     progress_store: ClassVar[ProgressStore]
+    auth_store: ClassVar[AuthStore]
     base_path: ClassVar[str]
     static_directory: ClassVar[Path]
     send_response_body = True
@@ -866,6 +876,57 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             },
         )
 
+    def do_POST(self) -> None:
+        request_path = urlsplit(self.path).path
+        if self._strip_base_path(request_path) != "/api/session":
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
+            return
+
+        try:
+            content_length = self._content_length()
+            payload = json.loads(self.rfile.read(content_length))
+            if not isinstance(payload, dict) or not all(
+                isinstance(payload.get(key), str) for key in ("user", "password")
+            ):
+                raise ValueError("Invalid session payload")
+        except OverflowError:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+
+        try:
+            user = self.progress_store.normalize_user(payload.get("user"))
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "Invalid name")
+            return
+
+        try:
+            result = self.auth_store.log_in(
+                user,
+                payload.get("password"),
+                # Creating a profile takes a second, explicit request, so a
+                # mistyped name reports "no such profile" instead of silently
+                # starting an empty one.
+                create=payload.get("create") is True,
+                has_progress=self.progress_store.has_user(user),
+            )
+        except AuthError as error:
+            self._send_json(
+                HTTPStatus(error.status), {"error": error.reason}, cache_control="no-store"
+            )
+            return
+        except OSError:
+            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Credential storage is unavailable")
+            return
+
+        self._send_json(
+            HTTPStatus.OK,
+            {"user": result.user, "token": result.token, "created": result.created},
+            cache_control="no-store",
+        )
+
     def do_PUT(self) -> None:
         request_path = urlsplit(self.path).path
         if self._strip_base_path(request_path) != "/api/progress":
@@ -876,7 +937,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             content_length = self._content_length()
             payload = json.loads(self.rfile.read(content_length))
             if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str) for key in ("user", "problem_id", "status")
+                isinstance(payload.get(key), str) for key in ("problem_id", "status")
             ):
                 raise ValueError("Invalid progress payload")
             duration_seconds = payload.get("duration_seconds")
@@ -892,9 +953,14 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
 
+        user = self._authenticated_user()
+        if user is None:
+            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
+            return
+
         try:
             problems = self.progress_store.set_status(
-                payload["user"], payload["problem_id"], payload["status"], duration_seconds
+                user, payload["problem_id"], payload["status"], duration_seconds
             )
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
@@ -905,13 +971,23 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
 
         self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
 
+    def _authenticated_user(self) -> str | None:
+        header = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if not header.startswith(prefix):
+            return None
+        return self.auth_store.user_for_token(header[len(prefix) :])
+
     def _get_progress(self, query: dict[str, list[str]]) -> None:
-        users = query.get("user", [])
-        if len(users) != 1:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Missing user")
+        if query:
+            self._send_error(HTTPStatus.BAD_REQUEST, "Unexpected query")
+            return
+        user = self._authenticated_user()
+        if user is None:
+            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
             return
         try:
-            problems = self.progress_store.get_user(users[0])
+            problems = self.progress_store.get_user(user)
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -921,20 +997,20 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
 
     def _get_activity(self, query: dict[str, list[str]]) -> None:
-        if not set(query) <= {"user", "limit"}:
+        if not set(query) <= {"limit"}:
             self._send_error(HTTPStatus.BAD_REQUEST, "Invalid activity query")
             return
-        users = query.get("user", [])
         limits = query.get("limit", [])
-        if len(users) != 1:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Missing user")
-            return
         if len(limits) > 1:
             self._send_error(HTTPStatus.BAD_REQUEST, "Invalid activity limit")
             return
+        user = self._authenticated_user()
+        if user is None:
+            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
+            return
         try:
             limit = 50 if not limits else self._parse_activity_limit(limits[0])
-            events = self.progress_store.get_activity(users[0], limit)
+            events = self.progress_store.get_activity(user, limit)
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -1021,6 +1097,7 @@ def create_server(
         for problem in collection.problems
     }
     ConfiguredReaderRequestHandler.progress_store = progress_store
+    ConfiguredReaderRequestHandler.auth_store = AuthStore(progress_path.parent)
     ConfiguredReaderRequestHandler.base_path = normalized_base_path
     ConfiguredReaderRequestHandler.static_directory = static_directory
     return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)

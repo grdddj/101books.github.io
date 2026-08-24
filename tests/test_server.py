@@ -21,7 +21,7 @@ from reader.server import (
     create_server,
     load_collections,
     normalize_base_path,
-    parse_initial_stones,
+    parse_position,
     source_collection_slug,
 )
 
@@ -143,41 +143,59 @@ class CollectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Invalid SGF"):
                     load_collections(fixture_root)
 
-    def test_parse_initial_stones_ignores_comment_text_and_reads_multiple_values(
+    def test_parse_position_ignores_comment_text_and_reads_multiple_values(
         self,
     ) -> None:
         source = r"(;C[hint: AB\[tt\] AW\[uu\] and escaped \[brackets\]]AB[aa][bb]AW[cc][dd])"
 
-        black, white = parse_initial_stones(source)
+        position = parse_position(source)
 
-        self.assertEqual(black, ["aa", "bb"])
-        self.assertEqual(white, ["cc", "dd"])
+        self.assertEqual(position.black, ["aa", "bb"])
+        self.assertEqual(position.white, ["cc", "dd"])
 
-    def test_parse_initial_stones_rejects_invalid_setup_coordinate(self) -> None:
+    def test_parse_position_rejects_invalid_setup_coordinate(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid SGF coordinate: tt"):
-            parse_initial_stones("(;AB[tt])")
+            parse_position("(;AB[tt])")
 
-    def test_parse_initial_stones_rejects_non_ascii_property_identifier(self) -> None:
+    def test_parse_position_rejects_non_ascii_property_identifier(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid SGF property identifier"):
-            parse_initial_stones("(;\u00c1B[aa])")
+            parse_position("(;\u00c1B[aa])")
 
-    def test_parse_initial_stones_treats_unescaped_open_bracket_as_comment_text(
+    def test_parse_position_treats_unescaped_open_bracket_as_comment_text(
         self,
     ) -> None:
-        black, white = parse_initial_stones("(;C[hint: [ordinary text]AB[aa])")
+        position = parse_position("(;C[hint: [ordinary text]AB[aa])")
 
-        self.assertEqual(black, ["aa"])
-        self.assertEqual(white, [])
+        self.assertEqual(position.black, ["aa"])
+        self.assertEqual(position.white, [])
 
-    def test_parse_initial_stones_reads_setup_from_root_node_only(self) -> None:
-        black, white = parse_initial_stones("(;AB[aa];B[bb]AB[cc])")
+    def test_parse_position_reads_setup_from_root_node_only(self) -> None:
+        position = parse_position("(;AB[aa];B[bb]AB[cc])")
 
-        self.assertEqual(black, ["aa"])
-        self.assertEqual(white, [])
+        self.assertEqual(position.black, ["aa"])
+        self.assertEqual(position.white, [])
 
-    def test_parse_initial_stones_rejects_missing_closing_game_tree(self) -> None:
+    def test_parse_position_reads_the_main_line_in_order(self) -> None:
+        position = parse_position("(;AB[aa]AW[bb];B[cc];W[dd];B[ee])")
+
+        self.assertEqual(
+            [(move.color, move.at) for move in position.solution],
+            [("black", "cc"), ("white", "dd"), ("black", "ee")],
+        )
+
+    def test_parse_position_ignores_variations_and_passes(self) -> None:
+        # The variations in these files refute wrong answers; the reader shows
+        # one sequence, and a pass is not a point that can be numbered.
+        position = parse_position("(;AB[aa];B[cc];W[];B[dd](;W[ee];B[ff])(;W[gg]))")
+
+        self.assertEqual([move.at for move in position.solution], ["cc", "dd"])
+
+    def test_parse_position_reports_a_problem_with_no_recorded_solution(self) -> None:
+        self.assertEqual(parse_position("(;AB[aa]AW[bb])").solution, [])
+
+    def test_parse_position_rejects_missing_closing_game_tree(self) -> None:
         with self.assertRaisesRegex(ValueError, "Missing SGF closing game tree"):
-            parse_initial_stones("(;AB[aa]")
+            parse_position("(;AB[aa]")
 
 
 class BasePathTests(unittest.TestCase):
@@ -851,8 +869,14 @@ class HttpApiTests(unittest.TestCase):
         self.assertIsInstance(response, dict)
         self.assertEqual(response["title"], "200 Basic Go Problems")
         self.assertEqual(response["slug"], "200-basic-go-problems")
-        self.assertEqual(response["problems"][0]["id"], "200-basic-go-problems:24176/174140@1")
-        self.assertNotIn("moves", response["problems"][0])
+        problem = response["problems"][0]
+        self.assertEqual(problem["id"], "200-basic-go-problems:24176/174140@1")
+        self.assertEqual(problem["black"], ["aa"])
+        self.assertEqual(problem["white"], ["bb"])
+        self.assertEqual(
+            problem["solution"],
+            [{"color": "black", "at": "cc"}, {"color": "white", "at": "dd"}],
+        )
 
     def test_removed_legacy_collection_endpoint_returns_not_found(self) -> None:
         status, response = self.request_json("/api/collection")

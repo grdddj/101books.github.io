@@ -277,6 +277,9 @@ def create_app(
                         "id": problem.problem_id,
                         "black": problem.black,
                         "white": problem.white,
+                        "solution": [
+                            {"color": move.color, "at": move.at} for move in problem.solution
+                        ],
                     }
                     for problem in collection.problems
                 ],

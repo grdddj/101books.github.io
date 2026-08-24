@@ -186,6 +186,9 @@ globalThis.readerTestApi = {
   getStoredUser: typeof getStoredUser === "function" ? getStoredUser : undefined,
   handleProfileNameInput: typeof handleProfileNameInput === "function" ? handleProfileNameInput : undefined,
   renderBoard,
+  renderSolutionControl: typeof renderSolutionControl === "function" ? renderSolutionControl : undefined,
+  toggleSolution: typeof toggleSolution === "function" ? toggleSolution : undefined,
+  isSolutionShown: () => isSolutionShown,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
   startReader,
@@ -246,6 +249,7 @@ function createProblems() {
     number: index + 1,
     black: ["aa"],
     white: [],
+    solution: [{ color: "black", at: "bb" }],
   }));
 }
 
@@ -1245,6 +1249,156 @@ test("board creates one explicit grid line for every crop row and column", () =>
     gridLines.filter((line) => line.className.includes("horizontal")).length,
     6,
   );
+});
+
+test("the solution crop widens only once the solution is on screen", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+  const problem = {
+    black: ["dd"],
+    white: [],
+    solution: [{ color: "black", at: "dq" }],
+  };
+  const crop = (showSolution) =>
+    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem, showSolution)));
+
+  // Sizing the board for the moves up front would say which way they run.
+  assert.equal(crop(false).rows, 3);
+  assert.equal(crop(true).rows, 16);
+});
+
+test("the solution numbers its moves in order and alternates the colours", () => {
+  const { context, elements } = loadApp({ savedName: "Ada" });
+
+  context.readerTestApi.renderBoard(
+    {
+      black: ["dd"],
+      white: [],
+      solution: [
+        { color: "black", at: "ed" },
+        { color: "white", at: "fd" },
+        { color: "black", at: "gd" },
+      ],
+    },
+    true,
+  );
+
+  const numbered = elements
+    .get("#board")
+    .appended.filter((element) => String(element.className).includes("stone--numbered"));
+  assert.deepEqual(
+    numbered.map((stone) => [stone.className, stone.textContent]),
+    [
+      ["stone black stone--numbered", "1"],
+      ["stone white stone--numbered", "2"],
+      ["stone black stone--numbered", "3"],
+    ],
+  );
+});
+
+test("a move replayed on an earlier point is captioned rather than hidden", () => {
+  const { context, elements } = loadApp({ savedName: "Ada" });
+
+  context.readerTestApi.renderBoard(
+    {
+      black: ["dd"],
+      white: [],
+      // Move 3 recaptures at the point of move 1.
+      solution: [
+        { color: "black", at: "ed" },
+        { color: "white", at: "fd" },
+        { color: "black", at: "ed" },
+      ],
+    },
+    true,
+  );
+
+  const numbered = elements
+    .get("#board")
+    .appended.filter((element) => String(element.className).includes("stone--numbered"));
+  assert.deepEqual(numbered.map((stone) => stone.textContent), ["1", "2"]);
+  assert.equal(elements.get("#solution-note").textContent, "3 at 1");
+  assert.equal(elements.get("#solution-note").hidden, false);
+});
+
+test("a solution move takes over the point of an opening stone it captured", () => {
+  const { context, elements } = loadApp({ savedName: "Ada" });
+
+  context.readerTestApi.renderBoard(
+    { black: [], white: ["ed"], solution: [{ color: "black", at: "ed" }] },
+    true,
+  );
+
+  const stones = elements
+    .get("#board")
+    .appended.filter((element) => String(element.className).startsWith("stone"));
+  assert.deepEqual(
+    stones.map((stone) => [stone.className, stone.textContent]),
+    [["stone black stone--numbered", "1"]],
+  );
+});
+
+test("hiding the solution leaves the opening position exactly as it was", () => {
+  const { context, elements } = loadApp({ savedName: "Ada" });
+  const problem = {
+    black: ["dd"],
+    white: [],
+    solution: [{ color: "white", at: "ed" }],
+  };
+
+  context.readerTestApi.renderBoard(problem, false);
+
+  const board = elements.get("#board");
+  assert.deepEqual(
+    board.appended
+      .filter((element) => String(element.className).startsWith("stone"))
+      .map((stone) => stone.className),
+    ["stone black"],
+  );
+  assert.equal(elements.get("#solution-note").hidden, true);
+});
+
+test("the solution is put away again when the problem changes", async () => {
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.toggleSolution();
+  assert.equal(context.readerTestApi.isSolutionShown(), true);
+  assert.equal(elements.get("#show-solution").textContent, "Hide solution");
+
+  context.readerTestApi.navigate(1);
+
+  assert.equal(context.readerTestApi.isSolutionShown(), false);
+  assert.equal(elements.get("#show-solution").textContent, "Show solution");
+});
+
+test("a problem with no recorded solution cannot be revealed", async () => {
+  const problems = createProblems().map((problem) => ({ ...problem, solution: [] }));
+  const fetchImpl = async (path, options = {}) => {
+    const session = sessionResponse(path, options);
+    if (session) return session;
+    if (path === "/api/collections") {
+      return response([
+        {
+          slug: "test-collection",
+          title: "Test collection",
+          category: "tsumego",
+          level: "20 kyu",
+          problem_count: problems.length,
+        },
+      ]);
+    }
+    if (path === "/api/collections/test-collection") {
+      return response({ slug: "test-collection", title: "Test collection", problems });
+    }
+    if (path === "/api/progress") return response({ problems: {} });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#show-solution").disabled, true);
+  context.readerTestApi.toggleSolution();
+  assert.equal(context.readerTestApi.isSolutionShown(), false);
 });
 
 test("successful status saves advance one problem without passing the final problem", async () => {

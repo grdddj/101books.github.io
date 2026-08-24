@@ -137,7 +137,20 @@ inflate it. Anything longer than an hour is treated as unmeasured and simply not
 recorded; events written before timing existed carry no duration and display
 without one.
 
-The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status. Returning to a problem already marked solved shows **Already solved** in place of the Solved button, and it cannot be recorded twice.
+The reader does not allow stone placement, and each board is cropped to its
+initial stones plus a one-line margin. **Show solution** plays the recorded
+sequence onto the board as numbered stones, alternating black and white from
+move 1; the crop widens to fit them only at that point, and the solution is put
+away again as soon as you move to another problem. The 199 problems with no
+recorded sequence leave the button disabled.
+
+The diagram follows the convention Go books use rather than the rules of the
+game: captures are not replayed, because removing stones would erase the numbers
+that make the sequence readable. Where a later move is played on the point of an
+earlier one - it captured that stone first - the earlier number stays on the
+board and the later one is captioned beneath it as `9 at 5`.
+
+Successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status. Returning to a problem already marked solved shows **Already solved** in place of the Solved button, and it cannot be recorded twice.
 
 ## Install on a phone
 

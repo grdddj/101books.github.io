@@ -330,6 +330,7 @@ h1 {
   );
   max-height: var(--board-available-height);
   aspect-ratio: var(--board-columns) / var(--board-rows);
+  container-type: size;
   overflow: hidden;
   border: 1px solid #735026;
   border-radius: 0.2rem;
@@ -361,14 +362,61 @@ h1 {
   pointer-events: none;
 }
 
+/* Numbered solution stones. The font has to track the cell, and only the board
+   knows how big a cell is, so it is a container and the size is a share of its
+   height divided by the row count. */
+.stone--numbered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-size: calc(46cqh / var(--board-rows));
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .stone.black {
   background: radial-gradient(circle at 32% 26%, #646464, #070707 68%);
   box-shadow: 0 0.08rem 0.14rem rgb(0 0 0 / 55%);
+  color: #ffffff;
 }
 
 .stone.white {
   background: radial-gradient(circle at 32% 26%, #fff, #dfdfdf 70%);
   box-shadow: 0 0.08rem 0.14rem rgb(0 0 0 / 42%);
+  color: #14100b;
+}
+
+/* Small and quiet: this is the button you press when you have given up, not one
+   of the four you press every problem. */
+.solution-toggle {
+  align-self: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.3rem 0.9rem;
+  border: 1px solid #b3a58a;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b5b46;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.solution-toggle:hover:not(:disabled) {
+  background: #ece2d4;
+}
+
+.solution-toggle.is-showing {
+  border-color: #8a6d3b;
+  background: #f0e2c8;
+  color: #4a3a1e;
+}
+
+.solution-note {
+  color: #6b5b46;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Solved is pressed once per problem; the other three are occasional. It gets

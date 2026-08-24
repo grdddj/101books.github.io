@@ -132,8 +132,24 @@
         role="img"
         aria-label="Static Go board showing the current problem"
       ></div>
+      <p
+        id="solution-note"
+        class="solution-note"
+        title="A move played where an earlier numbered stone already is: it captured that stone first."
+        hidden
+      ></p>
       <p id="status-feedback" role="status" aria-live="polite"></p>
       <nav class="reader-controls" aria-label="Problem controls">
+        <button
+          id="show-solution"
+          type="button"
+          class="solution-toggle"
+          aria-controls="board"
+          aria-expanded="false"
+          disabled
+        >
+          Show solution
+        </button>
         <button id="solved" type="button" aria-pressed="false" disabled>Solved</button>
         <div class="reader-controls__secondary">
           <button id="previous" type="button" disabled>Previous</button>

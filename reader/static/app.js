@@ -8,6 +8,8 @@ const previousButton = document.querySelector("#previous");
 const solvedButton = document.querySelector("#solved");
 const revisitButton = document.querySelector("#revisit");
 const nextButton = document.querySelector("#next");
+const showSolutionButton = document.querySelector("#show-solution");
+const solutionNote = document.querySelector("#solution-note");
 const profileButton = document.querySelector("#profile");
 const profilePanel = document.querySelector("#profile-panel");
 const profileForm = document.querySelector("#profile-form");
@@ -33,6 +35,7 @@ const basePath = window.READER_BASE_PATH || "";
 let collection;
 let catalog = [];
 let currentIndex = 0;
+let isSolutionShown = false;
 let statuses = {};
 let user;
 let wheelDelta = 0;
@@ -491,8 +494,11 @@ function getCoordinatePosition(coordinate) {
   };
 }
 
-function getBoardCrop(problem) {
+// The crop widens only once the solution is on screen. Sizing it for the moves
+// from the start would tell you which way they run before you have read it out.
+function getBoardCrop(problem, showSolution = false) {
   const stones = [...problem.black, ...problem.white];
+  if (showSolution) stones.push(...solutionMoves(problem).map((move) => move.at));
   const columns = stones.map((coordinate) => getCoordinatePosition(coordinate).column);
   const rows = stones.map((coordinate) => getCoordinatePosition(coordinate).row);
   const minColumn = Math.max(0, Math.min(...columns) - 1);
@@ -509,8 +515,31 @@ function getBoardCrop(problem) {
   };
 }
 
-function renderBoard(problem) {
-  const crop = getBoardCrop(problem);
+function solutionMoves(problem) {
+  return Array.isArray(problem.solution) ? problem.solution : [];
+}
+
+// The first stone played at a point is the one drawn; a later move on the same
+// point captured it first, and Go diagrams caption those rather than hiding a
+// number under another. Captures are not replayed, so the diagram is the moves
+// laid over the opening position, which is what the sequence is for.
+function placeSolution(problem) {
+  const numbered = new Map();
+  const repeats = [];
+  solutionMoves(problem).forEach((move, index) => {
+    const number = index + 1;
+    const existing = numbered.get(move.at);
+    if (existing) {
+      repeats.push({ number, at: existing.number });
+      return;
+    }
+    numbered.set(move.at, { color: move.color, number });
+  });
+  return { numbered, repeats };
+}
+
+function renderBoard(problem, showSolution = false) {
+  const crop = getBoardCrop(problem, showSolution);
   board.replaceChildren();
   board.style.setProperty("--board-columns", crop.columns);
   board.style.setProperty("--board-rows", crop.rows);
@@ -544,20 +573,42 @@ function renderBoard(problem) {
     grid.append(line);
   }
   board.append(grid);
+
+  const { numbered, repeats } = showSolution ? placeSolution(problem) : { numbered: new Map(), repeats: [] };
+  const placeStone = (coordinate, color, number) => {
+    const position = getCoordinatePosition(coordinate);
+    const stone = document.createElement("span");
+    stone.className = `stone ${color}${number ? " stone--numbered" : ""}`;
+    stone.style.gridColumn = position.column - crop.minColumn + 1;
+    stone.style.gridRow = position.row - crop.minRow + 1;
+    if (number) stone.textContent = String(number);
+    board.append(stone);
+  };
+
   for (const [color, coordinates] of [
     ["black", problem.black],
     ["white", problem.white],
   ]) {
     for (const coordinate of coordinates) {
-      const position = getCoordinatePosition(coordinate);
-      const stone = document.createElement("span");
-      stone.className = `stone ${color}`;
-      stone.style.gridColumn = position.column - crop.minColumn + 1;
-      stone.style.gridRow = position.row - crop.minRow + 1;
-      board.append(stone);
+      // A numbered stone on this point means the opening stone was captured on
+      // the way there, so the move is what the board ends up holding.
+      if (numbered.has(coordinate)) continue;
+      placeStone(coordinate, color);
     }
   }
+  for (const [coordinate, { color, number }] of numbered) {
+    placeStone(coordinate, color, number);
+  }
+  renderSolutionNote(showSolution ? repeats : []);
   return crop;
+}
+
+function renderSolutionNote(repeats) {
+  if (!solutionNote) return;
+  solutionNote.textContent = repeats
+    .map(({ number, at }) => `${number} at ${at}`)
+    .join(" · ");
+  solutionNote.hidden = repeats.length === 0;
 }
 
 function renderReader() {
@@ -584,13 +635,31 @@ function renderReader() {
     setCollectionControlsDisabled(controlsDisabled);
     setSelectedStatus(solvedButton, isSolved);
     setSelectedStatus(revisitButton, currentStatus === "revisit");
-    renderBoard(problem);
+    renderSolutionControl(problem, controlsDisabled);
+    renderBoard(problem, isSolutionShown);
     return true;
   } catch (error) {
     setControlsDisabled(true);
     showError(error);
     return false;
   }
+}
+
+function renderSolutionControl(problem, controlsDisabled) {
+  if (!showSolutionButton) return;
+  const hasSolution = solutionMoves(problem).length > 0;
+  showSolutionButton.textContent = isSolutionShown ? "Hide solution" : "Show solution";
+  showSolutionButton.disabled = controlsDisabled || !hasSolution;
+  showSolutionButton.setAttribute("aria-expanded", String(isSolutionShown));
+  showSolutionButton.title = hasSolution ? "" : "No solution is recorded for this problem.";
+  showSolutionButton.classList.toggle("is-showing", isSolutionShown);
+}
+
+function toggleSolution() {
+  if (!hasCollection() || isSaving || isLoadingCollection || isDialogOpen()) return;
+  if (solutionMoves(collection.problems[currentIndex]).length === 0) return;
+  isSolutionShown = !isSolutionShown;
+  renderReader();
 }
 
 function setSelectedStatus(button, selected) {
@@ -650,10 +719,12 @@ async function setCurrentStatus(status) {
 
 function navigate(delta) {
   if (!hasCollection() || isSaving || isLoadingCollection || isDialogOpen()) return;
-  currentIndex = Math.max(
+  const nextIndex = Math.max(
     0,
     Math.min(collection.problems.length - 1, currentIndex + delta),
   );
+  if (nextIndex !== currentIndex) isSolutionShown = false;
+  currentIndex = nextIndex;
   renderReader();
   syncProblemPath();
 }
@@ -1012,6 +1083,7 @@ async function loadActiveCollection(
   collection = nextCollection;
   statuses = nextStatuses;
   currentIndex = nextIndex;
+  isSolutionShown = false;
   renderCollectionList();
   renderReader();
   syncProblemPath(historyMode);
@@ -1194,6 +1266,7 @@ async function startReader() {
 
 previousButton.addEventListener("click", () => navigate(-1));
 nextButton.addEventListener("click", () => navigate(1));
+showSolutionButton?.addEventListener("click", toggleSolution);
 solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
 profileButton?.addEventListener("click", openProfilePanel);

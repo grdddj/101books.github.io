@@ -29,11 +29,27 @@ BASE_PATH_PATTERN = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
 
 
 @dataclass(frozen=True)
+class Move:
+    color: str
+    at: str
+
+
+@dataclass(frozen=True)
+class Position:
+    """A problem's opening position and the solution that follows it."""
+
+    black: list[str]
+    white: list[str]
+    solution: list[Move]
+
+
+@dataclass(frozen=True)
 class Problem:
     number: int
     problem_id: str
     black: list[str]
     white: list[str]
+    solution: list[Move]
 
 
 @dataclass(frozen=True)
@@ -318,17 +334,21 @@ class ProgressStore:
             os.close(directory_descriptor)
 
 
-def parse_initial_stones(source: str) -> tuple[list[str], list[str]]:
-    root_properties = _parse_sgf_root_properties(source)
-    stones: dict[str, list[str]] = {"AB": [], "AW": []}
+def parse_position(source: str) -> Position:
+    """Read the opening stones and the main-line solution out of one SGF.
 
-    for property_name, coordinates in stones.items():
-        coordinates.extend(root_properties.get(property_name, []))
+    Only the main line: the variations these files carry are refutations of
+    wrong answers, and the reader shows one sequence.
+    """
+    root_properties, moves = _parse_sgf(source)
+    return Position(
+        black=list(root_properties.get("AB", [])),
+        white=list(root_properties.get("AW", [])),
+        solution=moves,
+    )
 
-    return stones["AB"], stones["AW"]
 
-
-def _parse_sgf_root_properties(source: str) -> dict[str, list[str]]:
+def _parse_sgf(source: str) -> tuple[dict[str, list[str]], list[Move]]:
     index = 0
 
     def skip_whitespace() -> None:
@@ -388,7 +408,7 @@ def _parse_sgf_root_properties(source: str) -> dict[str, list[str]]:
             validate_coordinates(property_name, values)
             properties.setdefault(property_name, []).extend(values)
 
-    def parse_game_tree() -> dict[str, list[str]]:
+    def parse_game_tree() -> tuple[dict[str, list[str]], list[Move]]:
         nonlocal index
         if index == len(source) or source[index] != "(":
             raise ValueError("Missing SGF game tree")
@@ -398,23 +418,33 @@ def _parse_sgf_root_properties(source: str) -> dict[str, list[str]]:
             raise ValueError("Missing SGF root node")
         root_properties = parse_node()
         skip_whitespace()
+        moves: list[Move] = []
         while index < len(source) and source[index] == ";":
-            parse_node()
+            node = parse_node()
+            for color, property_name in (("black", "B"), ("white", "W")):
+                # "" and "tt" are both how SGF spells a pass.
+                moves.extend(
+                    Move(color, value)
+                    for value in node.get(property_name, [])
+                    if value not in {"", "tt"}
+                )
             skip_whitespace()
         while index < len(source) and source[index] == "(":
+            # A variation, not the main line: parsed so that a malformed one is
+            # still an error, then discarded. The reader shows one sequence.
             parse_game_tree()
             skip_whitespace()
         if index == len(source) or source[index] != ")":
             raise ValueError("Missing SGF closing game tree")
         index += 1
-        return root_properties
+        return root_properties, moves
 
     skip_whitespace()
-    root_properties = parse_game_tree()
+    root_properties, moves = parse_game_tree()
     skip_whitespace()
     if index != len(source):
         raise ValueError("Trailing content after SGF game tree")
-    return root_properties
+    return root_properties, moves
 
 
 def source_collection_slug(booklet_slug: str) -> str:
@@ -455,14 +485,20 @@ def _load_collection(tex_path: Path, repository_root: Path) -> Collection:
         if not sgf_path.is_file():
             raise ValueError(f"Missing SGF: {sgf_path}")
         try:
-            black, white = parse_initial_stones(sgf_path.read_text(encoding="utf-8"))
+            position = parse_position(sgf_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise ValueError(f"Invalid SGF: {sgf_path}") from error
         source_id = f"{section}/{problem}"
         occurrence = source_occurrences.get(source_id, 0) + 1
         source_occurrences[source_id] = occurrence
         problems.append(
-            Problem(number, collection_problem_id(slug, source_id, occurrence), black, white)
+            Problem(
+                number,
+                collection_problem_id(slug, source_id, occurrence),
+                position.black,
+                position.white,
+                position.solution,
+            )
         )
 
     return Collection(slug, title, category, level, rank, problems)

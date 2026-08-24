@@ -50,6 +50,8 @@ function loadApp({
   savedName = null,
   savedCollection = null,
   pathname = "/",
+  serviceWorkerSupported = true,
+  serviceWorkerFails = false,
 }) {
   const elements = new Map();
   const documentState = { activeElement: null };
@@ -71,6 +73,18 @@ function loadApp({
     ].filter(([, value]) => value !== null),
   );
   const location = { pathname };
+  const serviceWorkerRegistrations = [];
+  const navigator = serviceWorkerSupported
+    ? {
+        serviceWorker: {
+          async register(url, options) {
+            if (serviceWorkerFails) throw new Error("registration blocked");
+            serviceWorkerRegistrations.push({ url, options });
+            return { scope: options?.scope };
+          },
+        },
+      }
+    : {};
   const window = {
     READER_BASE_PATH: basePath,
     addEventListener(event, listener) {
@@ -129,6 +143,7 @@ function loadApp({
     },
     encodeURIComponent,
     fetch: fetchImpl,
+    navigator,
     localStorage: {
       getItem(key) {
         return localStorage.get(key) ?? null;
@@ -161,6 +176,7 @@ globalThis.readerTestApi = {
   openActivityPanel: typeof openActivityPanel === "function" ? openActivityPanel : undefined,
   openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
+  registerServiceWorker: typeof registerServiceWorker === "function" ? registerServiceWorker : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -184,6 +200,7 @@ globalThis.readerTestApi = {
     historyCalls,
     historyReplaceCalls,
     localStorage,
+    serviceWorkerRegistrations,
   };
 }
 
@@ -1172,4 +1189,48 @@ test("a failed pending save retains the visible problem and restores controls", 
     assert.equal(elements.get(selector).disabled, false);
   }
   assert.equal(elements.get("#status-feedback").textContent, "save failed");
+});
+
+test("registers the service worker below the configured base path", () => {
+  const { serviceWorkerRegistrations } = loadApp({
+    basePath: "/tsumego",
+    fetchImpl: createFetch(),
+    savedName: "tester",
+  });
+
+  assert.equal(serviceWorkerRegistrations.length, 1);
+  assert.equal(serviceWorkerRegistrations[0].url, "/tsumego/sw.js");
+  assert.equal(serviceWorkerRegistrations[0].options.scope, "/tsumego/");
+});
+
+test("registers the service worker at the root when no base path is configured", () => {
+  const { serviceWorkerRegistrations } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "tester",
+  });
+
+  assert.equal(serviceWorkerRegistrations.length, 1);
+  assert.equal(serviceWorkerRegistrations[0].url, "/sw.js");
+  assert.equal(serviceWorkerRegistrations[0].options.scope, "/");
+});
+
+test("starts without a service worker when the browser does not support one", () => {
+  const { serviceWorkerRegistrations } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "tester",
+    serviceWorkerSupported: false,
+  });
+
+  assert.deepEqual(serviceWorkerRegistrations, []);
+});
+
+test("keeps running when service worker registration is rejected", async () => {
+  const { context, serviceWorkerRegistrations } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "tester",
+    serviceWorkerFails: true,
+  });
+
+  assert.equal(await context.readerTestApi.registerServiceWorker(), undefined);
+  assert.deepEqual(serviceWorkerRegistrations, []);
 });

@@ -687,6 +687,41 @@ class HttpApiTests(unittest.TestCase):
             with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
                 self.assertEqual(response.status, 200)
 
+    def test_progressive_web_app_assets_are_served_with_the_configured_prefix(self) -> None:
+        expected_types = {
+            "/manifest.webmanifest": "application/manifest+json",
+            "/sw.js": "text/javascript",
+            "/icons/icon-192.png": "image/png",
+            "/icons/icon-512.png": "image/png",
+            "/icons/icon-maskable-512.png": "image/png",
+            "/icons/apple-touch-icon.png": "image/png",
+        }
+        for path, expected_type in expected_types.items():
+            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), expected_type)
+
+    def test_manifest_uses_relative_urls_so_one_document_fits_any_base_path(self) -> None:
+        with urlopen(f"{self.base_url}/manifest.webmanifest") as response:
+            manifest = json.loads(response.read())
+
+        self.assertEqual(manifest["start_url"], "./")
+        self.assertEqual(manifest["scope"], "./")
+        self.assertEqual(manifest["display"], "standalone")
+        for icon in manifest["icons"]:
+            self.assertTrue(icon["src"].startswith("./"), icon["src"])
+        self.assertIn("512x512", {icon["sizes"] for icon in manifest["icons"]})
+        self.assertIn("192x192", {icon["sizes"] for icon in manifest["icons"]})
+        self.assertIn("maskable", {icon.get("purpose") for icon in manifest["icons"]})
+
+    def test_reader_shell_links_the_manifest_and_home_screen_icons(self) -> None:
+        with urlopen(f"{self.base_url}/") as response:
+            body = response.read().decode("utf-8")
+
+        self.assertIn(f'<link rel="manifest" href="{self.base_path}/manifest.webmanifest">', body)
+        self.assertIn(f'href="{self.base_path}/icons/apple-touch-icon.png"', body)
+        self.assertIn('<meta name="theme-color" content="#e0b563">', body)
+
     def test_head_matches_get_routes_without_sending_a_body(self) -> None:
         for path in ["/", "/app.js", "/api/collections", "/healthz"]:
             with self.subTest(path=path):

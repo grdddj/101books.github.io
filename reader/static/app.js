@@ -797,4 +797,18 @@ window.addEventListener("popstate", loadCollectionFromHistory);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });
 
+// Registration is best effort: it needs a secure context, so plain-HTTP
+// deployments simply run without offline support instead of failing.
+async function registerServiceWorker() {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return undefined;
+  try {
+    return await navigator.serviceWorker.register(readerPath("/sw.js"), {
+      scope: readerPath("/"),
+    });
+  } catch (error) {
+    return undefined;
+  }
+}
+
+registerServiceWorker();
 startReader();

@@ -46,6 +46,26 @@ collection titles and problem numbers. The limit defaults to 50 and must be from
 
 The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status.
 
+## Install on a phone
+
+The reader ships as a progressive web app, so it can be added to a phone's home
+screen and opened without browser chrome. On Android use Chrome's **Install app**
+/ **Add to Home screen**; on iOS use Safari's **Share -> Add to Home Screen**.
+It requires HTTPS, which the production deployment already provides.
+
+Every URL in [the manifest](reader/static/manifest.webmanifest) is relative, so
+the same document works at the root during development and below `/tsumego/` in
+production without substitution. [The service worker](reader/static/sw.js)
+derives its own base from its script location; because it is served from the
+reader root, its default scope is exactly the reader and nothing else on the
+domain.
+
+Regenerate the icons after changing the artwork:
+
+```bash
+./tools/generate-icons.sh   # needs ImageMagick
+```
+
 ## Deploy below `/tsumego/`
 
 The production process listens only on loopback while Apache publishes it at

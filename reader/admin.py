@@ -9,9 +9,11 @@ import argparse
 import getpass
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from reader.auth import AuthError, AuthStore, validate_password
+from reader.metrics import EventLog
 
 
 def set_password(data_directory: Path, user: str, password: str | None) -> int:
@@ -52,6 +54,50 @@ def list_profiles(data_directory: Path) -> int:
     return 0
 
 
+def report_metrics(data_directory: Path, days: int | None) -> int:
+    entries = EventLog(data_directory).read(days)
+    if not entries:
+        print("No events recorded yet.")
+        return 0
+
+    print(
+        f"{len(entries)} events from {entries[0]['timestamp'][:10]} to {entries[-1]['timestamp'][:10]}\n"
+    )
+
+    print("by event")
+    for event, count in Counter(entry.get("event") for entry in entries).most_common():
+        print(f"  {count:6}  {event}")
+
+    logins = [
+        entry for entry in entries if entry.get("event") in {"session.login", "session.created"}
+    ]
+    if logins:
+        print("\nsign-ins by profile")
+        for user, count in Counter(entry.get("user") for entry in logins).most_common():
+            print(f"  {count:6}  {user}")
+
+    rejected = [entry for entry in entries if entry.get("event") == "session.rejected"]
+    if rejected:
+        print("\nrejected sign-ins by address")
+        for ip, count in Counter(entry.get("ip") for entry in rejected).most_common(10):
+            reasons = Counter(entry.get("reason") for entry in rejected if entry.get("ip") == ip)
+            detail = ", ".join(f"{reason}x{n}" for reason, n in reasons.most_common())
+            print(f"  {count:6}  {ip}  ({detail})")
+
+    solved = [entry for entry in entries if entry.get("event") == "progress.set"]
+    if solved:
+        durations = [entry["duration_seconds"] for entry in solved if "duration_seconds" in entry]
+        print(f"\nproblems marked: {len(solved)}")
+        if durations:
+            ordered = sorted(durations)
+            print(f"  median time: {ordered[len(ordered) // 2]}s over {len(durations)} timed")
+
+    print("\nby day")
+    for day, count in sorted(Counter(entry["timestamp"][:10] for entry in entries).items()):
+        print(f"  {day}  {count}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m reader.admin")
     parser.add_argument("--data-dir", type=Path, default=Path("reader-data"))
@@ -68,9 +114,14 @@ def main(argv: list[str] | None = None) -> int:
 
     commands.add_parser("list", help="show profiles and whether each has a password")
 
+    metrics_command = commands.add_parser("metrics", help="summarise the recorded events")
+    metrics_command.add_argument("--days", type=int, help="only the most recent N daily files")
+
     arguments = parser.parse_args(argv)
     if arguments.command == "set-password":
         return set_password(arguments.data_dir, arguments.user, arguments.password)
+    if arguments.command == "metrics":
+        return report_metrics(arguments.data_dir, arguments.days)
     return list_profiles(arguments.data_dir)
 
 

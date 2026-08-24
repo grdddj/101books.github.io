@@ -117,6 +117,20 @@ Cache); there is no API token on this machine.
   copy their headers across; forgetting that stripped `Authorization` and made
   every API call 401. `tests/test_browser_service_worker.mjs` guards it.
 
+## Event log
+
+`reader/metrics.py` appends one JSON object per line to
+`reader-data/metrics/<date>.jsonl` for everything the server observes. Recording
+is best effort and must stay that way: it is wrapped so an `OSError` can never
+turn into a failed request.
+
+- **Never log passwords or tokens.** A test asserts neither appears in the file.
+- Addresses come from `CF-Connecting-IP`; the socket peer is always Cloudflare.
+- Client-only actions (navigation, dialog opens, problem views) are **not**
+  recorded - there is no client events endpoint by design. `DELETE /api/session`
+  is the one exception, and exists solely so sign-out is observable.
+- Read it with `python3 -m reader.admin metrics [--days N]`.
+
 ## Progress data
 
 Never hand-edit `reader-data/users/*.json`: the running process holds the

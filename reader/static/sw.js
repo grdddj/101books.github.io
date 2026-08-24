@@ -84,8 +84,8 @@ async function networkFirst(request, fallbackUrl) {
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  // Progress writes are PUTs; they are deliberately left to fail offline
-  // rather than being queued, so the reader can report an honest error.
+  // Progress writes are PUTs and sign-out is a DELETE; both are deliberately
+  // left to fail offline rather than being queued.
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);

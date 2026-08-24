@@ -332,6 +332,14 @@ function setProfileBusy(busy) {
 // Signing out keeps the dialog open in its signed-out state instead of leaving
 // the reader with no name and no way to enter one.
 function signOutProfile() {
+  // Tell the server before discarding the token, so the sign-out is recorded;
+  // failing to reach it must not stop the sign-out itself.
+  if (sessionToken) {
+    fetch(readerPath("/api/session"), {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${sessionToken}` },
+    }).catch(() => undefined);
+  }
   clearSession();
   user = undefined;
   renderProfile();

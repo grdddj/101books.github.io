@@ -1631,3 +1631,45 @@ test("signing out discards the token as well as the name", async () => {
   assert.equal(localStorage.has("static-go-reader-user"), false);
   assert.equal(localStorage.has("static-go-reader-token"), false);
 });
+
+test("signing out tells the server before discarding the token", async () => {
+  const calls = [];
+  const inner = createFetch();
+  const { context } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path.endsWith("/api/session") && options.method === "DELETE") {
+        calls.push(options.headers?.Authorization);
+        return response({ signed_out: true });
+      }
+      return inner(path, options);
+    },
+    savedName: "Ada",
+    savedToken: "token-for-Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  context.readerTestApi.signOutProfile();
+
+  assert.deepEqual(calls, ["Bearer token-for-Ada"]);
+});
+
+test("an unreachable server does not block signing out", async () => {
+  const inner = createFetch();
+  const { context, localStorage } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path.endsWith("/api/session") && options.method === "DELETE") {
+        throw new TypeError("Failed to fetch");
+      }
+      return inner(path, options);
+    },
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.openProfilePanel();
+  context.readerTestApi.signOutProfile();
+
+  assert.equal(localStorage.has("static-go-reader-token"), false);
+  assert.equal(localStorage.has("static-go-reader-user"), false);
+});

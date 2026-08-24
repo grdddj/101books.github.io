@@ -855,6 +855,75 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertIn("claim", str(response["error"]).lower())
 
+    def recorded_events(self) -> list[dict[str, object]]:
+        return self.server.RequestHandlerClass.event_log.read()
+
+    def test_sign_ins_and_rejections_are_recorded_with_their_reason(self) -> None:
+        self.session(user="Grace", password=self.TEST_PASSWORD, create=True)
+        self.session(user="Grace", password="a different password")
+        self.session(user="Grase", password=self.TEST_PASSWORD)
+
+        events = [
+            (entry["event"], entry.get("user"), entry.get("reason"))
+            for entry in self.recorded_events()
+            if str(entry["event"]).startswith("session.")
+        ]
+
+        self.assertIn(("session.created", "Grace", None), events)
+        self.assertIn(("session.rejected", "Grace", "AuthError"), events)
+        self.assertIn(("session.rejected", "Grase", "UnknownProfileError"), events)
+
+    def test_no_password_or_token_is_ever_written_to_the_log(self) -> None:
+        self.session(user="Grace", password=self.TEST_PASSWORD, create=True)
+        self.put_json(
+            "/api/progress",
+            {"problem_id": "200-basic-go-problems:24176/174140@1", "status": "solved"},
+        )
+
+        written = json.dumps(self.recorded_events())
+
+        self.assertNotIn(self.TEST_PASSWORD, written)
+        self.assertNotIn(self.token, written)
+
+    def test_signing_out_is_recorded_even_though_tokens_are_stateless(self) -> None:
+        status, _ = self.request_json("/api/session", method="DELETE")
+
+        self.assertEqual(status, 200)
+        self.assertIn(
+            ("session.logout", "Ada"),
+            [(entry["event"], entry.get("user")) for entry in self.recorded_events()],
+        )
+
+    def test_marking_a_problem_records_what_and_how_long(self) -> None:
+        self.put_json(
+            "/api/progress",
+            {
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+                "duration_seconds": 31,
+            },
+        )
+
+        recorded = [entry for entry in self.recorded_events() if entry["event"] == "progress.set"]
+
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["user"], "Ada")
+        self.assertEqual(recorded[0]["status"], "solved")
+        self.assertEqual(recorded[0]["duration_seconds"], 31)
+
+    def test_the_recorded_address_comes_from_the_proxy_header(self) -> None:
+        # The socket peer is always Cloudflare, so a bare peer address would
+        # make every event look like it came from the same place.
+        self.request_json(
+            "/api/session",
+            method="DELETE",
+            headers={"CF-Connecting-IP": "203.0.113.7"},
+        )
+
+        logout = [entry for entry in self.recorded_events() if entry["event"] == "session.logout"]
+
+        self.assertEqual(logout[-1]["ip"], "203.0.113.7")
+
     def test_head_matches_get_routes_without_sending_a_body(self) -> None:
         for path in ["/", "/app.js", "/api/collections", "/healthz"]:
             with self.subTest(path=path):

@@ -18,6 +18,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from reader.auth import AuthError, AuthStore
+from reader.metrics import EventLog
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
 # A problem left open overnight says nothing about how long it was worked on,
@@ -755,6 +756,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
     activity_context: ClassVar[dict[str, tuple[str, str, int]]]
     progress_store: ClassVar[ProgressStore]
     auth_store: ClassVar[AuthStore]
+    event_log: ClassVar[EventLog]
     base_path: ClassVar[str]
     static_directory: ClassVar[Path]
     send_response_body = True
@@ -913,6 +915,9 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
                 has_progress=self.progress_store.has_user(user),
             )
         except AuthError as error:
+            self._record(
+                "session.rejected", user=user, status=error.status, reason=type(error).__name__
+            )
             self._send_json(
                 HTTPStatus(error.status), {"error": error.reason}, cache_control="no-store"
             )
@@ -921,11 +926,25 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Credential storage is unavailable")
             return
 
+        self._record("session.created" if result.created else "session.login", user=result.user)
         self._send_json(
             HTTPStatus.OK,
             {"user": result.user, "token": result.token, "created": result.created},
             cache_control="no-store",
         )
+
+    def do_DELETE(self) -> None:
+        # Tokens are stateless, so there is nothing to revoke: this exists so
+        # that signing out is visible at all. Without it the server cannot know
+        # a session ended, because sign-out is otherwise pure localStorage.
+        request_path = urlsplit(self.path).path
+        if self._strip_base_path(request_path) != "/api/session":
+            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
+            return
+
+        user = self._authenticated_user()
+        self._record("session.logout", user=user)
+        self._send_json(HTTPStatus.OK, {"signed_out": True}, cache_control="no-store")
 
     def do_PUT(self) -> None:
         request_path = urlsplit(self.path).path
@@ -962,6 +981,13 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             problems = self.progress_store.set_status(
                 user, payload["problem_id"], payload["status"], duration_seconds
             )
+            self._record(
+                "progress.set",
+                user=user,
+                problem_id=payload["problem_id"],
+                status=payload["status"],
+                duration_seconds=duration_seconds,
+            )
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -970,6 +996,16 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
+
+    def _client_ip(self) -> str:
+        for header in ("CF-Connecting-IP", "X-Forwarded-For"):
+            value = self.headers.get(header)
+            if value:
+                return value.split(",")[0].strip()
+        return self.client_address[0]
+
+    def _record(self, event: str, **fields: object) -> None:
+        self.event_log.record(event, ip=self._client_ip(), **fields)
 
     def _authenticated_user(self) -> str | None:
         header = self.headers.get("Authorization", "")
@@ -984,6 +1020,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             return
         user = self._authenticated_user()
         if user is None:
+            self._record("session.unauthenticated", route="/api/progress")
             self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
             return
         try:
@@ -1031,6 +1068,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
                     "problem_number": problem_number,
                 }
             )
+        self._record("activity.viewed", user=user, count=len(enriched_events))
         self._send_json(HTTPStatus.OK, {"events": enriched_events}, cache_control="no-store")
 
     @staticmethod
@@ -1098,6 +1136,7 @@ def create_server(
     }
     ConfiguredReaderRequestHandler.progress_store = progress_store
     ConfiguredReaderRequestHandler.auth_store = AuthStore(progress_path.parent)
+    ConfiguredReaderRequestHandler.event_log = EventLog(progress_path.parent)
     ConfiguredReaderRequestHandler.base_path = normalized_base_path
     ConfiguredReaderRequestHandler.static_directory = static_directory
     return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)

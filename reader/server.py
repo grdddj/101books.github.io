@@ -1,4 +1,3 @@
-import argparse
 import hashlib
 import json
 import os
@@ -12,14 +11,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
+import typer
 import uvicorn
 
 from reader.auth import AuthStore
 from reader.logs import configure_logging
 from reader.metrics import EventLog
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
 # A problem left open overnight says nothing about how long it was worked on,
 # so anything beyond an hour is rejected rather than recorded.
@@ -577,33 +578,47 @@ def create_server(
     return ReaderServer(app, host, port, event_log, progress_store)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--data-dir", type=Path)
-    parser.add_argument("--base-path", default="")
-    arguments = parser.parse_args()
+# One command, so typer collapses it: `python -m reader.server --port 8123`
+# stays the invocation, with no subcommand to name.
+cli = typer.Typer(add_completion=False)
 
-    repository_root = Path(__file__).resolve().parents[1]
-    data_directory = arguments.data_dir or repository_root / "reader-data"
+
+def checked_base_path(value: str) -> str:
+    """Reject an unsafe prefix while parsing, rather than after the scan."""
     try:
-        base_path = normalize_base_path(arguments.base_path)
+        return normalize_base_path(value)
     except ValueError as error:
-        parser.error(str(error))
-    server = create_server(
-        repository_root,
-        data_directory,
-        arguments.host,
-        arguments.port,
-        base_path,
-    )
+        raise typer.BadParameter(str(error)) from error
+
+
+@cli.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
+    data_dir: Annotated[
+        Path,
+        typer.Option(help="Profiles, credentials, the event log and the log file."),
+    ] = REPOSITORY_ROOT / "reader-data",
+    base_path: Annotated[
+        str,
+        typer.Option(
+            callback=checked_base_path,
+            help="URL prefix to serve under, with or without its slashes.",
+        ),
+    ] = "",
+) -> None:
+    """Serve the Go problem reader."""
+    server = create_server(REPOSITORY_ROOT, data_dir, host, port, base_path)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+def main() -> None:
+    cli()
 
 
 if __name__ == "__main__":

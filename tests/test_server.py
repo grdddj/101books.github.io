@@ -7,12 +7,16 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from typer.testing import CliRunner
 
 from reader.server import (
     ProgressStore,
     StorageCorruptionError,
+    cli,
     collection_problem_id,
     create_server,
     load_collections,
@@ -186,6 +190,34 @@ class BasePathTests(unittest.TestCase):
         for base_path in ("/tsumego//reader", "/tsumego/../reader", "/tsumego?<script>"):
             with self.subTest(base_path=base_path), self.assertRaises(ValueError):
                 normalize_base_path(base_path)
+
+
+class CommandLineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runner = CliRunner()
+
+    def test_the_options_need_no_subcommand(self) -> None:
+        # The systemd unit and every documented invocation pass options
+        # directly, so the single command must stay collapsed.
+        result = self.runner.invoke(cli, ["--help"])
+
+        self.assertEqual(result.exit_code, 0)
+        for option in ("--host", "--port", "--data-dir", "--base-path"):
+            self.assertIn(option, result.output)
+
+    def test_an_unsafe_base_path_is_refused_before_the_booklets_are_scanned(self) -> None:
+        with patch("reader.server.create_server") as create:
+            result = self.runner.invoke(cli, ["--base-path", "/../evil"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        create.assert_not_called()
+
+    def test_the_base_path_reaches_the_server_normalized(self) -> None:
+        with patch("reader.server.create_server") as create:
+            self.runner.invoke(cli, ["--base-path", "tsumego/"])
+
+        create.assert_called_once()
+        self.assertEqual(create.call_args.args[4], "/tsumego")
 
 
 class ProgressStoreTests(unittest.TestCase):

@@ -96,9 +96,14 @@ Cache); there is no API token on this machine.
 
 - **FastAPI on uvicorn, run through uv.** `reader/api.py` is the whole HTTP
   surface; `reader/server.py` owns the catalog, the SGF parsing, the progress
-  store and the CLI, and knows nothing about HTTP beyond `ReaderServer`, a thin
-  uvicorn wrapper that keeps `serve_forever` / `shutdown` / `server_address` for
-  the tests. `reader/auth.py`, `reader/metrics.py` and `reader/admin.py` are
+  store and the typer CLI, and knows nothing about HTTP beyond `ReaderServer`, a
+  thin uvicorn wrapper that keeps `serve_forever` / `shutdown` / `server_address`
+  for the tests.
+- **The CLI is one typer command, deliberately.** With a single `@cli.command()`
+  and no callback, typer collapses it, so `python -m reader.server --port 8123`
+  keeps working with no subcommand to name - which is what the systemd unit and
+  every documented invocation pass. Adding a second command would silently break
+  all of them; `CommandLineTests` guards it. `reader/auth.py`, `reader/metrics.py` and `reader/admin.py` are
   still standard library only. Dependencies are pinned in `uv.lock`; keep the
   list short, because every one of them is something that can break a deploy.
 - **Requests are validated by pydantic, responses are written by hand.**

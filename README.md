@@ -168,3 +168,19 @@ The reader does not authenticate browser-entered display names. Publish it only
 to trusted users or add access control at Apache; anyone who can reach the site
 can select another person's display name. `deploy/deploy.sh` writes a
 commented-out Basic authentication block into the Apache fragment for that.
+
+### Restarting without a password
+
+Changing `reader/server.py` requires a restart, which normally prompts for a
+sudo password and so cannot run unattended. To grant just that:
+
+```bash
+sudo ./deploy/enable-passwordless-restart.sh              # install
+sudo ./deploy/enable-passwordless-restart.sh --remove     # undo
+```
+
+It writes `/etc/sudoers.d/tsumego` allowing `systemctl start|stop|restart|status`
+and `journalctl` for `tsumego.service` only, after validating the file with
+`visudo`. Sudo is not widened for anything else. The trade-off is real though:
+anything running as that user can now stop or restart the reader without the
+password gate.

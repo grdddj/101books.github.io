@@ -706,6 +706,16 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
     base_path: ClassVar[str]
     static_directory: ClassVar[Path]
     send_response_body = True
+    # Assets are unversioned, so any shared cache in front of the reader must
+    # revalidate; without this a CDN pins a stale app.js and the service worker
+    # then caches that stale copy too.
+    static_cache_control: str | None = None
+
+    def end_headers(self) -> None:
+        if self.static_cache_control is not None:
+            self.send_header("Cache-Control", self.static_cache_control)
+            self.static_cache_control = None
+        super().end_headers()
 
     def do_GET(self) -> None:
         self._handle_read()
@@ -746,6 +756,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
             self._send_reader_shell()
             return
         self.path = path
+        self.static_cache_control = "no-cache"
         if self.send_response_body:
             super().do_GET()
         else:
@@ -770,6 +781,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded_body)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         if self.send_response_body:
             self.wfile.write(encoded_body)

@@ -72,6 +72,14 @@ Collection data reaches the cache once the worker controls the page, which is
 from the second visit onwards. On a first visit followed immediately by going
 offline the shell still renders and reports the connection error.
 
+Static assets are served with `Cache-Control: no-cache` because they carry no
+content hash. A shared cache in front of the reader would otherwise pin a stale
+`app.js` for hours, and the service worker would then cache that stale copy too.
+This matters here: the production domain sits behind Cloudflare, which caches
+`.js` and `.css` for four hours by default when the origin sends no header. The
+service worker still serves assets from Cache Storage first and refreshes them
+in the background, so revalidating on every request costs nothing at launch.
+
 Regenerate the icons after changing the artwork:
 
 ```bash

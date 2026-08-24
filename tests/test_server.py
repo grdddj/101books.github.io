@@ -722,6 +722,11 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn(f'href="{self.base_path}/icons/apple-touch-icon.png"', body)
         self.assertIn('<meta name="theme-color" content="#e0b563">', body)
 
+    def test_unversioned_assets_are_marked_no_cache_for_shared_caches(self) -> None:
+        for path in ["/", "/app.js", "/app.css", "/sw.js", "/manifest.webmanifest"]:
+            with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
+                self.assertEqual(response.headers["Cache-Control"], "no-cache")
+
     def test_head_matches_get_routes_without_sending_a_body(self) -> None:
         for path in ["/", "/app.js", "/api/collections", "/healthz"]:
             with self.subTest(path=path):

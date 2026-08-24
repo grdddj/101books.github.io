@@ -16,7 +16,8 @@ uvx ruff format --check reader tests
 uvx ruff check reader tests
 ```
 
-The reader is a FastAPI application served by uvicorn. `uv` builds the
+The reader is a FastAPI application served by uvicorn, with pydantic validating
+the two request bodies it accepts. `uv` builds the
 environment from `uv.lock`; `uv run` creates it on first use, and
 `uv sync --frozen` installs exactly what is locked without resolving anything.
 

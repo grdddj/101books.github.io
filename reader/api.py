@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -33,6 +34,47 @@ COLLECTION_ROUTE = re.compile(r"(?:[^/]+(?:/\d+)?)?")
 DEFAULT_ACTIVITY_LIMIT = 50
 
 logger = logging.getLogger(__name__)
+
+
+class ReaderRequest(BaseModel):
+    """Base for the two request bodies the reader accepts.
+
+    Strict, so that a JSON `"1"` is not quietly read as the number 1 and a
+    `"yes"` is not read as true - this is a private API with one client, and a
+    request that does not say what it means is a bug worth reporting. Strictness
+    also rejects a bool where an int is wanted, which the hand-written checks
+    had to special-case because bool subclasses int.
+
+    Unknown keys are still ignored: an older client sending a field this version
+    dropped should keep working.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+
+class SessionRequest(ReaderRequest):
+    user: str
+    password: str
+    # Creating a profile takes a second, explicit request, so a mistyped name
+    # reports "no such profile" instead of silently starting an empty one.
+    create: bool = False
+
+
+class ProgressRequest(ReaderRequest):
+    problem_id: str
+    status: str
+    duration_seconds: int | None = None
+
+
+def validation_message(exception: ValidationError) -> str:
+    """Describe a rejected body without repeating any of it back.
+
+    Pydantic's own rendering includes the offending value, and one of these
+    bodies carries a password.
+    """
+    first = exception.errors()[0]
+    location = ".".join(str(part) for part in first["loc"]) or "body"
+    return f"{location}: {first['msg']}"
 
 
 class UnhandledErrorMiddleware:
@@ -260,19 +302,12 @@ def create_app(
     @app.put(route("/api/progress"))
     async def _set_progress(request: Request) -> Response:
         try:
-            payload = await read_json_body(request)
-            if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str) for key in ("problem_id", "status")
-            ):
-                raise ValueError("Invalid progress payload")
-            duration_seconds = payload.get("duration_seconds")
-            # bool is a subclass of int, so it has to be rejected explicitly.
-            if duration_seconds is not None and (
-                isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int)
-            ):
-                raise ValueError("Invalid duration")
+            body = ProgressRequest.model_validate(await read_json_body(request))
         except OverflowError:
             return error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
+        # ValidationError subclasses ValueError, so it has to be caught first.
+        except ValidationError as failure:
+            return error(HTTPStatus.BAD_REQUEST, validation_message(failure))
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as failure:
             return error(HTTPStatus.BAD_REQUEST, str(failure))
 
@@ -282,15 +317,15 @@ def create_app(
 
         try:
             problems = progress_store.set_status(
-                user, payload["problem_id"], payload["status"], duration_seconds
+                user, body.problem_id, body.status, body.duration_seconds
             )
             record(
                 request,
                 "progress.set",
                 user=user,
-                problem_id=payload["problem_id"],
-                status=payload["status"],
-                duration_seconds=duration_seconds,
+                problem_id=body.problem_id,
+                status=body.status,
+                duration_seconds=body.duration_seconds,
             )
         except ValueError as failure:
             return error(HTTPStatus.BAD_REQUEST, str(failure))
@@ -336,29 +371,25 @@ def create_app(
     @app.post(route("/api/session"))
     async def _log_in(request: Request) -> Response:
         try:
-            payload = await read_json_body(request)
-            if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str) for key in ("user", "password")
-            ):
-                raise ValueError("Invalid session payload")
+            body = SessionRequest.model_validate(await read_json_body(request))
         except OverflowError:
             return error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
+        # ValidationError subclasses ValueError, so it has to be caught first.
+        except ValidationError as failure:
+            return error(HTTPStatus.BAD_REQUEST, validation_message(failure))
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as failure:
             return error(HTTPStatus.BAD_REQUEST, str(failure))
 
         try:
-            user = progress_store.normalize_user(payload.get("user"))
+            user = progress_store.normalize_user(body.user)
         except ValueError:
             return error(HTTPStatus.BAD_REQUEST, "Invalid name")
 
         try:
             result = auth_store.log_in(
                 user,
-                str(payload["password"]),
-                # Creating a profile takes a second, explicit request, so a
-                # mistyped name reports "no such profile" instead of silently
-                # starting an empty one.
-                create=payload.get("create") is True,
+                body.password,
+                create=body.create,
                 has_progress=progress_store.has_user(user),
             )
         except AuthError as failure:

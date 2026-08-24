@@ -101,10 +101,21 @@ Cache); there is no API token on this machine.
   the tests. `reader/auth.py`, `reader/metrics.py` and `reader/admin.py` are
   still standard library only. Dependencies are pinned in `uv.lock`; keep the
   list short, because every one of them is something that can break a deploy.
-- **Responses are written by hand, not generated.** No pydantic models, no
-  `response_model`, no `/docs`. The client was built against `{"error": ...}`
-  bodies with `no-store` on anything user-specific and `no-cache` on the
-  unversioned assets, and a framework default must not be able to change that.
+- **Requests are validated by pydantic, responses are written by hand.**
+  `SessionRequest` and `ProgressRequest` are `strict=True`, so `"1"` is not read
+  as `1` and `"yes"` is not read as `true`; strictness is also what rejects a
+  bool where an int is wanted, which the hand-written checks had to special-case
+  because bool subclasses int. Unknown keys stay ignored so an older client
+  keeps working. Bodies are read manually and then `model_validate`d rather than
+  bound as a FastAPI parameter, because the 16 KB cap has to be enforced from
+  `Content-Length` *before* the body is read, and because FastAPI's automatic
+  422 is not the `{"error": ...}` shape the client handles.
+  `validation_message()` builds the reply from the field and the reason only -
+  pydantic's own rendering includes the offending value, and one of those bodies
+  carries a password.
+  There is deliberately no `response_model` and no `/docs`: `response_model`
+  filters fields silently, and the client was built against exact bodies with
+  `no-store` on anything user-specific and `no-cache` on the unversioned assets.
   `@app.get` answers GET only, so read routes are registered through the local
   `readable()` helper to keep HEAD working.
 - **Base path.** `--base-path /tsumego` prefixes pages, assets, API routes and

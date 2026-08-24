@@ -784,6 +784,26 @@ class HttpApiTests(unittest.TestCase):
 
                 self.assertEqual(status, 400)
 
+    def test_progress_put_rejects_a_payload_that_is_not_a_problem_and_a_status(self) -> None:
+        for payload in (
+            [],
+            "solved",
+            {"status": "solved"},
+            {"problem_id": "200-basic-go-problems:24176/174140@1"},
+            {"problem_id": 1, "status": "solved"},
+            {"problem_id": "200-basic-go-problems:24176/174140@1", "status": 7},
+        ):
+            with self.subTest(payload=payload):
+                status, response = self.request_json(
+                    "/api/progress",
+                    method="PUT",
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+
+                self.assertEqual(status, 400)
+                self.assertIn("error", response)
+
     def session(self, **payload: object) -> tuple[int, dict[str, object]]:
         return self.request_json(
             "/api/session",
@@ -792,6 +812,20 @@ class HttpApiTests(unittest.TestCase):
             headers={"Content-Type": "application/json"},
             authenticated=False,
         )
+
+    def test_session_rejects_a_create_flag_that_is_not_a_boolean(self) -> None:
+        # It used to be read as "anything but true means false", which quietly
+        # turned a malformed request into a sign-in attempt.
+        status, response = self.session(user="Grace", password=self.TEST_PASSWORD, create="yes")
+
+        self.assertEqual(status, 400)
+        self.assertIn("error", response)
+
+    def test_a_rejected_payload_is_never_echoed_back(self) -> None:
+        status, response = self.session(user="Ada", password=self.TEST_PASSWORD, create="yes")
+
+        self.assertEqual(status, 400)
+        self.assertNotIn(self.TEST_PASSWORD, json.dumps(response))
 
     def test_a_mistyped_name_is_reported_rather_than_quietly_created(self) -> None:
         status, response = self.session(user="Grase", password=self.TEST_PASSWORD)

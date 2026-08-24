@@ -43,12 +43,27 @@ sudo journalctl -u tsumego.service -n 50 # logs
 curl --fail http://127.0.0.1:8123/tsumego/healthz
 ```
 
-`restart`, `start`, `stop`, `status` and `journalctl` for this unit run
-**without a password** - installed by `deploy/enable-passwordless-restart.sh`,
-which writes `/etc/sudoers.d/tsumego`. Nothing else about sudo is widened, so
-any other privileged command still prompts and an agent cannot run it
-unattended. Use the full unit name (`tsumego.service`) or the bare name
-(`tsumego`); both are covered, but other spellings are not.
+`restart`, `start`, `stop` and `journalctl` for this unit run **without a
+password** - installed by `deploy/enable-passwordless-restart.sh`, which writes
+`/etc/sudoers.d/tsumego`. Nothing else is widened: `systemctl restart apache2`,
+`systemctl daemon-reload` and everything else still prompt.
+
+**Sudoers matches the command line literally.** The systemctl rules carry no
+wildcard, so they only match with *no extra flags*:
+
+```bash
+sudo systemctl restart tsumego.service      # works
+sudo systemctl restart tsumego              # works (both names are listed)
+sudo systemctl restart tsumego.service --no-block   # REFUSED - extra argument
+sudo journalctl -u tsumego.service -n 50    # works - this rule does take flags
+```
+
+The wildcard is omitted on purpose: `systemctl restart tsumego.service *` would
+also match `systemctl restart tsumego.service apache2`, turning a single-unit
+grant into control over every unit on the machine. Do not add one.
+
+`systemctl status`, `is-active` and `show` need no sudo at all - run them
+directly, with whatever flags you like.
 
 **Startup takes about 10 seconds** - the server scans all 108 booklets before
 listening. Never conclude the service is broken from a single failed request

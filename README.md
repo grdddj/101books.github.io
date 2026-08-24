@@ -179,8 +179,12 @@ sudo ./deploy/enable-passwordless-restart.sh              # install
 sudo ./deploy/enable-passwordless-restart.sh --remove     # undo
 ```
 
-It writes `/etc/sudoers.d/tsumego` allowing `systemctl start|stop|restart|status`
-and `journalctl` for `tsumego.service` only, after validating the file with
-`visudo`. Sudo is not widened for anything else. The trade-off is real though:
-anything running as that user can now stop or restart the reader without the
-password gate.
+It writes `/etc/sudoers.d/tsumego` allowing `systemctl start|stop|restart` and
+`journalctl` for `tsumego.service` only, after validating the file with
+`visudo`. Sudo is not widened for anything else. The systemctl rules take no
+extra arguments, because a trailing wildcard would also match a second unit
+name and grant control over every service on the machine. `systemctl status`
+is not included since it does not need root.
+
+The trade-off is real though: anything running as that user can now stop or
+restart the reader without the password gate.

@@ -35,7 +35,9 @@ systemctl list-unit-files "${SERVICE}" --no-legend | grep -q . \
 
 # Sudoers matches the command line literally, so each spelling the caller might
 # use needs its own entry -- "restart tsumego" does not match "restart
-# tsumego.service".
+# tsumego.service". Deliberately no trailing wildcard on the systemctl rules:
+# "restart tsumego.service *" would also permit "restart tsumego.service
+# apache2" and turn this into control over every unit on the box.
 UNIT_SHORT=${SERVICE%.service}
 log "Granting ${RUN_USER} passwordless control of ${SERVICE}"
 
@@ -44,7 +46,7 @@ trap 'rm -f "${temporary_file}"' EXIT
 {
     echo "# Managed by deploy/enable-passwordless-restart.sh of the 101books Go reader."
     echo "# Scoped to ${SERVICE} so an agent can restart the reader unattended."
-    for verb in restart start stop status; do
+    for verb in restart start stop; do
         echo "${RUN_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl ${verb} ${SERVICE}"
         echo "${RUN_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl ${verb} ${UNIT_SHORT}"
     done
@@ -61,7 +63,7 @@ install -o root -g root -m 0440 "${temporary_file}" "${SUDOERS_FILE}"
 visudo --check >/dev/null || die "sudoers set is now invalid; remove ${SUDOERS_FILE}"
 
 log "Verifying"
-if sudo -n -u root -l -U "${RUN_USER}" 2>/dev/null | grep -q "systemctl restart ${SERVICE}"; then
+if sudo -l -U "${RUN_USER}" 2>/dev/null | grep -q "systemctl restart ${SERVICE}"; then
     echo "rule active for ${RUN_USER}"
 else
     echo "rule installed; run 'sudo -l' as ${RUN_USER} to confirm"
@@ -71,10 +73,14 @@ cat <<EOM
 
   Installed ${SUDOERS_FILE}
 
-  Now works without a password (as ${RUN_USER}):
+  Now works without a password (as ${RUN_USER}), with no extra flags:
     sudo systemctl restart ${SERVICE}
-    sudo systemctl status ${SERVICE}
-    sudo journalctl -u ${SERVICE} -n 50
+    sudo systemctl start ${SERVICE}
+    sudo systemctl stop ${SERVICE}
+    sudo journalctl -u ${SERVICE} -n 50      # flags allowed here
+
+  Status needs no sudo at all:
+    systemctl status ${SERVICE} --no-pager
 
   Undo with:
     sudo ./deploy/enable-passwordless-restart.sh --remove

@@ -27,6 +27,9 @@ UNIT_FILE=/etc/systemd/system/${SERVICE_NAME}
 VHOST_FILE=/etc/apache2/sites-available/${DOMAIN}-le-ssl.conf
 PROXY_CONF=/etc/apache2/conf-available/tsumego.conf
 PYTHON=/usr/bin/python3
+# uv owns the dependencies now; the interpreter above is only used to check the
+# version it will build the environment from.
+UV=${UV:-}
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -55,6 +58,7 @@ fi
 
 log "Preflight checks"
 [[ -f ${APP_DIR}/reader/server.py ]] || die "reader/server.py not found under ${APP_DIR}"
+[[ -f ${APP_DIR}/uv.lock ]]          || die "uv.lock not found under ${APP_DIR}"
 [[ -x ${PYTHON} ]]                   || die "python3 not found at ${PYTHON}"
 id -u "${RUN_USER}" >/dev/null 2>&1  || die "user '${RUN_USER}' does not exist"
 command -v apachectl >/dev/null      || die "apache2 is required"
@@ -62,6 +66,21 @@ command -v apachectl >/dev/null      || die "apache2 is required"
 
 "${PYTHON}" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
     || die "python3 >= 3.10 is required"
+
+# systemd runs with a bare PATH, so the unit needs uv by absolute path.
+if [[ -z ${UV} ]]; then
+    RUN_USER_HOME=$(getent passwd "${RUN_USER}" | cut -d: -f6)
+    for candidate in "${RUN_USER_HOME}/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
+        [[ -x ${candidate} ]] && { UV=${candidate}; break; }
+    done
+fi
+[[ -n ${UV} && -x ${UV} ]] || die "uv not found; install it or pass UV=/path/to/uv"
+
+# Built here rather than at service start: a boot must never depend on the
+# network, and --frozen means the lock file is used exactly as committed.
+log "Syncing dependencies with ${UV}"
+sudo -u "${RUN_USER}" env -C "${APP_DIR}" "${UV}" sync --frozen \
+    || die "uv sync failed"
 
 # Refuse to steal a port that some other process already owns.
 if ss -lnt "sport = :${PORT}" | grep -q LISTEN; then
@@ -86,13 +105,14 @@ Group=${RUN_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=${PYTHON} -m reader.server --host 127.0.0.1 --port ${PORT} --base-path ${BASE_PATH} --data-dir ${DATA_DIR}
+ExecStart=${UV} run --frozen --no-sync python -m reader.server --host 127.0.0.1 --port ${PORT} --base-path ${BASE_PATH} --data-dir ${DATA_DIR}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=true
 # The checkout lives in \$HOME, so the home directory has to stay visible;
-# only the progress directory is writable.
+# only the progress directory is writable. --no-sync keeps uv from wanting to
+# write to .venv or its cache at start-up.
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=${DATA_DIR}
@@ -180,7 +200,9 @@ cat <<EOF
   Logs:     journalctl -u ${SERVICE_NAME} -f
   Code:     ${APP_DIR} (commit $(sudo -u "${RUN_USER}" git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown))
   Data:     ${DATA_DIR}/users  -- back this up, it holds all progress
+  Deps:     ${APP_DIR}/.venv (uv sync --frozen from uv.lock)
 
-  After changing the code:  sudo systemctl restart ${SERVICE_NAME}
+  After changing the code:         sudo systemctl restart ${SERVICE_NAME}
+  After changing the dependencies: sudo ./deploy/deploy.sh
 
 EOF

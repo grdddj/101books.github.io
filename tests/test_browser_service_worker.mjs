@@ -13,6 +13,9 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const cssPath = join(repositoryRoot, "reader/static/app.css");
+// The reader runs on FastAPI now, so it needs the interpreter `uv sync` built
+// rather than whatever `python3` happens to be on PATH.
+const readerPython = join(repositoryRoot, ".venv/bin/python");
 
 async function findPlaywright() {
   const require = createRequire(import.meta.url);
@@ -57,7 +60,7 @@ async function withReader(port, run) {
 
   const base = `http://127.0.0.1:${port}/tsumego/`;
   const server = spawn(
-    "python3",
+    readerPython,
     ["-m", "reader.server", "--host", "127.0.0.1", "--port", String(port),
      "--base-path", "/tsumego", "--data-dir", join(root, "data")],
     { cwd: root, stdio: "ignore" },

@@ -856,7 +856,7 @@ class HttpApiTests(unittest.TestCase):
     def test_a_profile_holding_progress_must_be_claimed_before_it_can_be_logged_into(self) -> None:
         # "Ada" already has a credential from setUp, so use a name that has
         # progress written directly by the store instead.
-        self.server.RequestHandlerClass.progress_store.set_status(
+        self.server.progress_store.set_status(
             "Bert", "200-basic-go-problems:24176/174140@1", "solved"
         )
 
@@ -866,7 +866,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("claim", str(response["error"]).lower())
 
     def recorded_events(self) -> list[dict[str, object]]:
-        return self.server.RequestHandlerClass.event_log.read()
+        return self.server.event_log.read()
 
     def test_sign_ins_and_rejections_are_recorded_with_their_reason(self) -> None:
         self.session(user="Grace", password=self.TEST_PASSWORD, create=True)
@@ -1174,20 +1174,26 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertIn("error", response)
 
-    def test_progress_put_rejects_missing_or_negative_content_length(self) -> None:
-        for content_length in (None, "-1"):
-            with self.subTest(content_length=content_length):
-                headers = [] if content_length is None else [f"Content-Length: {content_length}"]
-                status, response = self.raw_put_progress(headers)
+    def test_progress_put_rejects_a_missing_content_length(self) -> None:
+        status, body = self.raw_put_progress([])
 
-                self.assertEqual(status, 400)
-                self.assertIn("error", response)
+        self.assertEqual(status, 400)
+        self.assertIn("error", json.loads(body))
+
+    def test_progress_put_rejects_a_malformed_content_length(self) -> None:
+        # The HTTP layer refuses this before the application is invoked, so the
+        # reply is the server's own plain-text notice rather than reader JSON.
+        # What matters is that it is refused and nothing reaches the store.
+        status, body = self.raw_put_progress(["Content-Length: -1"])
+
+        self.assertEqual(status, 400)
+        self.assertNotIn(b"problems", body)
 
     def test_progress_put_rejects_oversized_content_length_without_reading_body(self) -> None:
-        status, response = self.raw_put_progress(["Content-Length: 16385"])
+        status, body = self.raw_put_progress(["Content-Length: 16385"])
 
         self.assertEqual(status, 413)
-        self.assertIn("error", response)
+        self.assertIn("error", json.loads(body))
 
     def _make_fixture_collection(self) -> None:
         books_directory = self.root / "books"
@@ -1253,7 +1259,12 @@ class HttpApiTests(unittest.TestCase):
         except HTTPError as error:
             return error.code, json.loads(error.read())
 
-    def raw_put_progress(self, headers: list[str]) -> tuple[int, dict[str, object]]:
+    def raw_put_progress(self, headers: list[str]) -> tuple[int, bytes]:
+        """Send a hand-written PUT and return its status and raw body.
+
+        Raw rather than parsed: a request the HTTP layer rejects never reaches
+        the application, so the body is not always JSON.
+        """
         request_lines = [
             f"PUT {self.base_path}/api/progress HTTP/1.1",
             "Host: 127.0.0.1",
@@ -1272,7 +1283,7 @@ class HttpApiTests(unittest.TestCase):
 
         header, body = bytes(response).split(b"\r\n\r\n", maxsplit=1)
         status = int(header.splitlines()[0].split()[1])
-        return status, json.loads(body)
+        return status, body
 
 
 class BasePathHttpApiTests(HttpApiTests):

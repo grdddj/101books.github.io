@@ -9,15 +9,16 @@ use by default and listens at `http://127.0.0.1:8000/`.
 From the repository root:
 
 ```bash
-python3 -m reader.server
-python3 -m unittest -v
+uv run python -m reader.server
+uv run python -m unittest -v
 node --test tests/test_app.mjs tests/test_browser_grid.mjs tests/test_browser_collections.mjs
 uvx ruff format --check reader tests
 uvx ruff check reader tests
 ```
 
-The reader depends only on the standard library, so no virtual environment or
-dependency install is needed.
+The reader is a FastAPI application served by uvicorn. `uv` builds the
+environment from `uv.lock`; `uv run` creates it on first use, and
+`uv sync --frozen` installs exactly what is locked without resolving anything.
 
 Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
 be opened directly at `http://127.0.0.1:8000/collections/<slug>`, and a single
@@ -188,14 +189,15 @@ It installs a `tsumego.service` unit that runs as the invoking user directly out
 of this checkout, waits for the local health endpoint, enables Apache's proxy
 modules, writes `/etc/apache2/conf-available/tsumego.conf`, includes it from the
 `*:443` virtual host (backing that file up first), validates the configuration
-before reloading, and finally checks the public URL. The reader depends only on
-the standard library, so the unit runs `python3` directly and no virtual
-environment is created.
+before reloading, and finally checks the public URL. It also runs
+`uv sync --frozen` so that the environment is built at deploy time; the unit
+then starts the server with `uv run --frozen --no-sync`, which never resolves or
+installs anything and so never needs the network at boot.
 
 The equivalent process command is:
 
 ```bash
-python3 -m reader.server \
+uv run python -m reader.server \
   --host 127.0.0.1 \
   --port 8123 \
   --base-path /tsumego \
@@ -208,8 +210,9 @@ directory; it cannot be combined with the compatibility option
 `--progress-file`.
 
 Static files and the HTML shell are read from disk on every request, so editing
-`reader/static/` takes effect immediately. Changing `reader/server.py` needs a
-restart:
+`reader/static/` takes effect immediately. Changing `reader/server.py` or
+`reader/api.py` needs a restart, and changing the dependencies needs another
+`sudo ./deploy/deploy.sh`:
 
 ```bash
 sudo systemctl restart tsumego.service

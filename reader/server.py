@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import tempfile
 import threading
 from _thread import LockType
@@ -11,13 +12,12 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar
-from urllib.parse import parse_qs, unquote, urlsplit
+from typing import ClassVar
 
-from reader.auth import AuthError, AuthStore
+import uvicorn
+
+from reader.auth import AuthStore
 from reader.metrics import EventLog
 
 MAX_PROGRESS_REQUEST_BODY_BYTES = 16 * 1024
@@ -751,362 +751,43 @@ def normalize_base_path(base_path: str) -> str:
     return normalized
 
 
-class ReaderRequestHandler(SimpleHTTPRequestHandler):
-    collections: ClassVar[list[Collection]]
-    activity_context: ClassVar[dict[str, tuple[str, str, int]]]
-    progress_store: ClassVar[ProgressStore]
-    auth_store: ClassVar[AuthStore]
-    event_log: ClassVar[EventLog]
-    base_path: ClassVar[str]
-    static_directory: ClassVar[Path]
-    send_response_body = True
-    # Assets are unversioned, so any shared cache in front of the reader must
-    # revalidate; without this a CDN pins a stale app.js and the service worker
-    # then caches that stale copy too.
-    static_cache_control: str | None = None
+class ReaderServer:
+    """Uvicorn behind the small server surface the reader was built against.
 
-    def end_headers(self) -> None:
-        if self.static_cache_control is not None:
-            self.send_header("Cache-Control", self.static_cache_control)
-            self.static_cache_control = None
-        super().end_headers()
+    The listening socket is bound here rather than by uvicorn so that `port=0`
+    still tells the caller which port it was given before anything serves, and
+    so `shutdown()` can wait for the loop to actually stop.
+    """
 
-    def do_GET(self) -> None:
-        self._handle_read()
-
-    def do_HEAD(self) -> None:
-        self.send_response_body = False
-        self._handle_read()
-
-    def _handle_read(self) -> None:
-        request = urlsplit(self.path)
-        path = self._strip_base_path(request.path)
-        if path is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
-            return
-        if path == "/healthz":
-            self._send_json(HTTPStatus.OK, {"status": "ok"})
-            return
-        if path == "/api/collections":
-            self._send_json(HTTPStatus.OK, self._catalog())
-            return
-        if path.startswith("/api/collections/"):
-            self._get_collection(path.removeprefix("/api/collections/"))
-            return
-        if path == "/api/progress":
-            self._get_progress(parse_qs(request.query, keep_blank_values=True))
-            return
-        if path == "/api/activity":
-            self._get_activity(parse_qs(request.query, keep_blank_values=True))
-            return
-        if path.startswith("/api/"):
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
-            return
-        if (
-            path == "/"
-            or path == "/index.html"
-            or re.fullmatch(r"/collections/(?:[^/]+(?:/\d+)?)?", unquote(path))
-        ):
-            self._send_reader_shell()
-            return
-        self.path = path
-        self.static_cache_control = "no-cache"
-        if self.send_response_body:
-            super().do_GET()
-        else:
-            super().do_HEAD()
-
-    def _strip_base_path(self, path: str) -> str | None:
-        if not self.base_path:
-            return path
-        if path == self.base_path:
-            return "/"
-        if not path.startswith(f"{self.base_path}/"):
-            return None
-        return path.removeprefix(self.base_path)
-
-    def _send_reader_shell(self) -> None:
-        try:
-            source = (self.static_directory / "index.html").read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Reader shell is unavailable")
-            return
-        encoded_body = source.replace("__READER_BASE_PATH__", self.base_path).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded_body)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        if self.send_response_body:
-            self.wfile.write(encoded_body)
-
-    def _catalog(self) -> list[dict[str, str | int]]:
-        return [
-            {
-                "slug": collection.slug,
-                "title": collection.title,
-                "category": collection.category,
-                "level": collection.level,
-                "rank": collection.rank,
-                "problem_count": len(collection.problems),
-            }
-            for collection in self.collections
-        ]
-
-    def _get_collection(self, slug: str) -> None:
-        collection = next((item for item in self.collections if item.slug == slug), None)
-        if collection is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown collection")
-            return
-        self._send_collection(collection)
-
-    def _send_collection(self, collection: Collection) -> None:
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "slug": collection.slug,
-                "title": collection.title,
-                "problems": [
-                    {
-                        "number": problem.number,
-                        "id": problem.problem_id,
-                        "black": problem.black,
-                        "white": problem.white,
-                    }
-                    for problem in collection.problems
-                ],
-            },
-        )
-
-    def do_POST(self) -> None:
-        request_path = urlsplit(self.path).path
-        if self._strip_base_path(request_path) != "/api/session":
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
-            return
-
-        try:
-            content_length = self._content_length()
-            payload = json.loads(self.rfile.read(content_length))
-            if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str) for key in ("user", "password")
-            ):
-                raise ValueError("Invalid session payload")
-        except OverflowError:
-            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
-            return
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-            return
-
-        try:
-            user = self.progress_store.normalize_user(payload.get("user"))
-        except ValueError:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Invalid name")
-            return
-
-        try:
-            result = self.auth_store.log_in(
-                user,
-                payload.get("password"),
-                # Creating a profile takes a second, explicit request, so a
-                # mistyped name reports "no such profile" instead of silently
-                # starting an empty one.
-                create=payload.get("create") is True,
-                has_progress=self.progress_store.has_user(user),
-            )
-        except AuthError as error:
-            self._record(
-                "session.rejected", user=user, status=error.status, reason=type(error).__name__
-            )
-            self._send_json(
-                HTTPStatus(error.status), {"error": error.reason}, cache_control="no-store"
-            )
-            return
-        except OSError:
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Credential storage is unavailable")
-            return
-
-        self._record("session.created" if result.created else "session.login", user=result.user)
-        self._send_json(
-            HTTPStatus.OK,
-            {"user": result.user, "token": result.token, "created": result.created},
-            cache_control="no-store",
-        )
-
-    def do_DELETE(self) -> None:
-        # Tokens are stateless, so there is nothing to revoke: this exists so
-        # that signing out is visible at all. Without it the server cannot know
-        # a session ended, because sign-out is otherwise pure localStorage.
-        request_path = urlsplit(self.path).path
-        if self._strip_base_path(request_path) != "/api/session":
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
-            return
-
-        user = self._authenticated_user()
-        self._record("session.logout", user=user)
-        self._send_json(HTTPStatus.OK, {"signed_out": True}, cache_control="no-store")
-
-    def do_PUT(self) -> None:
-        request_path = urlsplit(self.path).path
-        if self._strip_base_path(request_path) != "/api/progress":
-            self._send_error(HTTPStatus.NOT_FOUND, "Unknown route")
-            return
-
-        try:
-            content_length = self._content_length()
-            payload = json.loads(self.rfile.read(content_length))
-            if not isinstance(payload, dict) or not all(
-                isinstance(payload.get(key), str) for key in ("problem_id", "status")
-            ):
-                raise ValueError("Invalid progress payload")
-            duration_seconds = payload.get("duration_seconds")
-            # bool is a subclass of int, so it has to be rejected explicitly.
-            if duration_seconds is not None and (
-                isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int)
-            ):
-                raise ValueError("Invalid duration")
-        except OverflowError:
-            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
-            return
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-            return
-
-        user = self._authenticated_user()
-        if user is None:
-            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
-            return
-
-        try:
-            problems = self.progress_store.set_status(
-                user, payload["problem_id"], payload["status"], duration_seconds
-            )
-            self._record(
-                "progress.set",
-                user=user,
-                problem_id=payload["problem_id"],
-                status=payload["status"],
-                duration_seconds=duration_seconds,
-            )
-        except ValueError as error:
-            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-            return
-        except (OSError, StorageCorruptionError):
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
-            return
-
-        self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
-
-    def _client_ip(self) -> str:
-        for header in ("CF-Connecting-IP", "X-Forwarded-For"):
-            value = self.headers.get(header)
-            if value:
-                return value.split(",")[0].strip()
-        return self.client_address[0]
-
-    def _record(self, event: str, **fields: object) -> None:
-        self.event_log.record(event, ip=self._client_ip(), **fields)
-
-    def _authenticated_user(self) -> str | None:
-        header = self.headers.get("Authorization", "")
-        prefix = "Bearer "
-        if not header.startswith(prefix):
-            return None
-        return self.auth_store.user_for_token(header[len(prefix) :])
-
-    def _get_progress(self, query: dict[str, list[str]]) -> None:
-        if query:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Unexpected query")
-            return
-        user = self._authenticated_user()
-        if user is None:
-            self._record("session.unauthenticated", route="/api/progress")
-            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
-            return
-        try:
-            problems = self.progress_store.get_user(user)
-        except ValueError as error:
-            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-            return
-        except (OSError, StorageCorruptionError):
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
-            return
-        self._send_json(HTTPStatus.OK, {"problems": problems}, cache_control="no-store")
-
-    def _get_activity(self, query: dict[str, list[str]]) -> None:
-        if not set(query) <= {"limit"}:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Invalid activity query")
-            return
-        limits = query.get("limit", [])
-        if len(limits) > 1:
-            self._send_error(HTTPStatus.BAD_REQUEST, "Invalid activity limit")
-            return
-        user = self._authenticated_user()
-        if user is None:
-            self._send_error(HTTPStatus.UNAUTHORIZED, "Sign in required")
-            return
-        try:
-            limit = 50 if not limits else self._parse_activity_limit(limits[0])
-            events = self.progress_store.get_activity(user, limit)
-        except ValueError as error:
-            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-            return
-        except (OSError, StorageCorruptionError):
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Progress storage is unavailable")
-            return
-
-        enriched_events: list[dict[str, str | int]] = []
-        for event in events:
-            collection_slug, collection_title, problem_number = self.activity_context[
-                event["problem_id"]
-            ]
-            enriched_events.append(
-                {
-                    **event,
-                    "collection_slug": collection_slug,
-                    "collection_title": collection_title,
-                    "problem_number": problem_number,
-                }
-            )
-        self._record("activity.viewed", user=user, count=len(enriched_events))
-        self._send_json(HTTPStatus.OK, {"events": enriched_events}, cache_control="no-store")
-
-    @staticmethod
-    def _parse_activity_limit(value: str) -> int:
-        if not re.fullmatch(r"[0-9]+", value):
-            raise ValueError("Invalid activity limit")
-        limit = int(value)
-        if not 1 <= limit <= 100:
-            raise ValueError("Activity limit must be between 1 and 100")
-        return limit
-
-    def _content_length(self) -> int:
-        header_value = self.headers.get("Content-Length")
-        if header_value is None or not re.fullmatch(r"[0-9]+", header_value):
-            raise ValueError("Content-Length must be a non-negative decimal integer")
-        content_length = int(header_value)
-        if content_length > MAX_PROGRESS_REQUEST_BODY_BYTES:
-            raise OverflowError
-        return content_length
-
-    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-        self.log_message('"%s %s %s"', self.command, urlsplit(self.path).path, str(code))
-
-    def _send_error(self, status: HTTPStatus, message: str) -> None:
-        self._send_json(status, {"error": message})
-
-    def _send_json(
-        self, status: HTTPStatus, body: object, *, cache_control: str | None = None
+    def __init__(
+        self,
+        app: object,
+        host: str,
+        port: int,
+        event_log: EventLog,
+        progress_store: "ProgressStore",
     ) -> None:
-        encoded_body = json.dumps(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded_body)))
-        if cache_control is not None:
-            self.send_header("Cache-Control", cache_control)
-        self.end_headers()
-        if self.send_response_body:
-            self.wfile.write(encoded_body)
+        # The log and the store are the server's state; everything else about a
+        # request lives inside the app.
+        self.event_log = event_log
+        self.progress_store = progress_store
+        self._socket = socket.create_server((host, port))
+        self.server_address: tuple[str, int] = self._socket.getsockname()
+        self._server = uvicorn.Server(uvicorn.Config(app, log_level="info"))
+        self._stopped = threading.Event()
+
+    def serve_forever(self) -> None:
+        try:
+            self._server.run(sockets=[self._socket])
+        finally:
+            self._stopped.set()
+
+    def shutdown(self) -> None:
+        self._server.should_exit = True
+        self._stopped.wait(timeout=30)
+
+    def server_close(self) -> None:
+        self._socket.close()
 
 
 def create_server(
@@ -1115,31 +796,33 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 0,
     base_path: str = "",
-) -> ThreadingHTTPServer:
+) -> ReaderServer:
+    # Imported here because reader.api reads the catalog and storage types out
+    # of this module; at module scope the two would import each other.
+    from reader.api import create_app
+
     normalized_base_path = normalize_base_path(base_path)
     collections = load_collections(repository_root)
     progress_store = ProgressStore(
         progress_path,
         {problem.problem_id for collection in collections for problem in collection.problems},
     )
-    static_directory = Path(__file__).parent / "static"
-
-    class ConfiguredReaderRequestHandler(ReaderRequestHandler):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, directory=static_directory, **kwargs)
-
-    ConfiguredReaderRequestHandler.collections = collections
-    ConfiguredReaderRequestHandler.activity_context = {
-        problem.problem_id: (collection.slug, collection.title, problem.number)
-        for collection in collections
-        for problem in collection.problems
-    }
-    ConfiguredReaderRequestHandler.progress_store = progress_store
-    ConfiguredReaderRequestHandler.auth_store = AuthStore(progress_path.parent)
-    ConfiguredReaderRequestHandler.event_log = EventLog(progress_path.parent)
-    ConfiguredReaderRequestHandler.base_path = normalized_base_path
-    ConfiguredReaderRequestHandler.static_directory = static_directory
-    return ThreadingHTTPServer((host, port), ConfiguredReaderRequestHandler)
+    event_log = EventLog(progress_path.parent)
+    app = create_app(
+        collections=collections,
+        activity_context={
+            problem.problem_id: (collection.slug, collection.title, problem.number)
+            for collection in collections
+            for problem in collection.problems
+        },
+        progress_store=progress_store,
+        auth_store=AuthStore(progress_path.parent),
+        event_log=event_log,
+        base_path=normalized_base_path,
+        static_directory=Path(__file__).parent / "static",
+        max_request_body_bytes=MAX_PROGRESS_REQUEST_BODY_BYTES,
+    )
+    return ReaderServer(app, host, port, event_log, progress_store)
 
 
 def main() -> None:

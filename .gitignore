@@ -4,3 +4,4 @@
 reader-data/
 __pycache__/
 *.py[cod]
+.venv/

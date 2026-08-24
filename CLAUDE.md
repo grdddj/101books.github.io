@@ -9,15 +9,19 @@ needs to know before changing or deploying it.
 
 ## The working tree IS production
 
-The live service runs `python3 -m reader.server` **directly out of this
+The live service runs `uv run python -m reader.server` **directly out of this
 checkout** as user `jirka`. There is no build step, no second copy, no
-container.
+container - but there is now a `.venv`, built by `uv sync --frozen` from
+`uv.lock`.
 
 Consequences that matter more than they look:
 
 - Editing `reader/static/*` changes the live site **immediately** - the server
   reads static files and the HTML shell from disk on every request.
-- Editing `reader/server.py` needs a restart to take effect.
+- Editing `reader/server.py` or `reader/api.py` needs a restart to take effect.
+- Changing `pyproject.toml` needs `sudo ./deploy/deploy.sh`, not a restart: the
+  unit runs `uv run --no-sync` so that starting the service never touches the
+  network, which also means it never installs anything.
 - `git checkout`, `git stash`, or leaving a broken edit in the tree changes what
   visitors get. Never leave the tree in a non-working state.
 - `reader-data/` inside the tree holds all solving progress and is gitignored.
@@ -35,7 +39,7 @@ Consequences that matter more than they look:
 | Apache | `/etc/apache2/conf-available/tsumego.conf`, included from the `*:443` vhost of `jirkuvserver.cz-le-ssl.conf` |
 
 ```bash
-sudo ./deploy/deploy.sh              # full install or re-deploy, idempotent
+sudo ./deploy/deploy.sh              # full install or re-deploy, idempotent (runs uv sync)
 sudo ./deploy/deploy.sh --uninstall  # remove service + Apache wiring
 
 sudo systemctl restart tsumego.service   # after any reader/server.py change
@@ -90,9 +94,19 @@ Cache); there is no API token on this machine.
 
 ## Reader architecture
 
-- **No third-party dependencies.** `reader/server.py` is standard library only
-  (`http.server`). Do not add dependencies without a strong reason; the
-  deployment has no virtualenv and relies on this.
+- **FastAPI on uvicorn, run through uv.** `reader/api.py` is the whole HTTP
+  surface; `reader/server.py` owns the catalog, the SGF parsing, the progress
+  store and the CLI, and knows nothing about HTTP beyond `ReaderServer`, a thin
+  uvicorn wrapper that keeps `serve_forever` / `shutdown` / `server_address` for
+  the tests. `reader/auth.py`, `reader/metrics.py` and `reader/admin.py` are
+  still standard library only. Dependencies are pinned in `uv.lock`; keep the
+  list short, because every one of them is something that can break a deploy.
+- **Responses are written by hand, not generated.** No pydantic models, no
+  `response_model`, no `/docs`. The client was built against `{"error": ...}`
+  bodies with `no-store` on anything user-specific and `no-cache` on the
+  unversioned assets, and a framework default must not be able to change that.
+  `@app.get` answers GET only, so read routes are registered through the local
+  `readable()` helper to keep HEAD working.
 - **Base path.** `--base-path /tsumego` prefixes pages, assets, API routes and
   history entries. `reader/static/index.html` is templated: the server
   substitutes `__READER_BASE_PATH__` when serving the shell. Client code reads
@@ -165,12 +179,15 @@ copy the user's JSON file somewhere outside the tree.
 ## Checks before committing
 
 ```bash
-python3 -m unittest                                    # server + storage
+uv run python -m unittest                              # server + storage
 node --test tests/test_app.mjs tests/test_browser_grid.mjs tests/test_browser_collections.mjs
 node --test tests/test_browser_service_worker.mjs      # slow, needs playwright
 uvx ruff format --check reader tests
 uvx ruff check reader tests
 ```
+
+`uv run`, not `python3`: the server needs the `.venv` that `uv sync` builds. The
+service-worker test spawns `.venv/bin/python` directly for the same reason.
 
 The browser tests skip themselves when they cannot find Chromium, and a skipped
 test is how a board-rendering regression reached production. `tests/chromium.mjs`

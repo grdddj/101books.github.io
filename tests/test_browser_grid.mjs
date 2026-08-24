@@ -1,34 +1,24 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { findChromium } from "./chromium.mjs";
+
 const execFileAsync = promisify(execFile);
 const appSource = await readFile(new URL("../reader/static/app.js", import.meta.url), "utf8");
 const appCss = await readFile(new URL("../reader/static/app.css", import.meta.url), "utf8");
 
-async function findChromium() {
-  for (const candidate of [
-    process.env.CHROMIUM_BINARY,
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/bin/google-chrome",
-  ]) {
-    if (!candidate) continue;
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Continue looking for a supported local Chromium binary.
-    }
-  }
-  return null;
-}
-
 const chromium = await findChromium();
+
+// A crop taller than it is wide is the case that used to break: the board hit
+// its height budget, kept its width, and every stone slid off its line. Both
+// window sizes are pinned because the failure only showed up once the height
+// was the binding constraint.
+const WINDOW_SIZES = ["1000,900", "900,560"];
 
 function browserHarnessSource() {
   const sourceWithoutStartup = appSource.replace(
@@ -46,6 +36,8 @@ globalThis.readerTestApi = { renderBoard };`,
   const cases = [
     { name: "ten-by-five", problem: { black: ["cb", "jd"], white: [] }, columns: 10, rows: 5 },
     { name: "nine-by-six", problem: { black: ["be", "hh"], white: [] }, columns: 9, rows: 6 },
+    { name: "eight-by-eight", problem: { black: ["bb", "gg"], white: [] }, columns: 8, rows: 8 },
+    { name: "five-by-ten", problem: { black: ["bb", "di"], white: [] }, columns: 5, rows: 10 },
   ];
   const results = cases.map(({ name, problem, columns, rows }) => {
     readerTestApi.renderBoard(problem);
@@ -84,7 +76,7 @@ globalThis.readerTestApi = { renderBoard };`,
 </script>`;
 }
 
-test("Chromium renders every explicit grid line at square-cell spacing", { skip: !chromium }, async () => {
+async function measureGrid(windowSize) {
   const directory = await mkdtemp(join(process.cwd(), ".go-reader-grid-"));
   const htmlPath = join(directory, "grid.html");
   try {
@@ -95,16 +87,25 @@ test("Chromium renders every explicit grid line at square-cell spacing", { skip:
       "--disable-gpu",
       "--dump-dom",
       "--virtual-time-budget=1000",
+      `--window-size=${windowSize}`,
       pathToFileURL(htmlPath).href,
     ]);
     const match = stdout.match(/<pre id="browser-grid-result">([^<]*)<\/pre>/);
-    assert.ok(match, "Chromium did not return the grid measurement result");
+    assert.ok(match, `Chromium did not return the grid measurement result at ${windowSize}`);
     const results = JSON.parse(match[1]);
     assert.deepEqual(results, [
       { name: "ten-by-five", vertical: 10, horizontal: 5, squareCells: true, stonesAligned: true },
       { name: "nine-by-six", vertical: 9, horizontal: 6, squareCells: true, stonesAligned: true },
+      { name: "eight-by-eight", vertical: 8, horizontal: 8, squareCells: true, stonesAligned: true },
+      { name: "five-by-ten", vertical: 5, horizontal: 10, squareCells: true, stonesAligned: true },
     ]);
   } finally {
     await rm(directory, { force: true, recursive: true });
+  }
+}
+
+test("Chromium renders every explicit grid line at square-cell spacing", { skip: !chromium }, async () => {
+  for (const windowSize of WINDOW_SIZES) {
+    await measureGrid(windowSize);
   }
 });

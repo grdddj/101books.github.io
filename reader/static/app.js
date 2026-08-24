@@ -510,6 +510,11 @@ function renderBoard(problem) {
   grid.setAttribute("aria-hidden", "true");
   grid.setAttribute("class", "goban-grid");
   grid.setAttribute("viewBox", `0 0 ${crop.columns} ${crop.rows}`);
+  // The stones are placed by the CSS grid, which always fills the board box.
+  // Letting the SVG letterbox itself instead would offset every line from the
+  // intersection its stone sits on the moment the box is not exactly
+  // columns:rows.
+  grid.setAttribute("preserveAspectRatio", "none");
   for (let column = 0; column < crop.columns; column += 1) {
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     const position = column + 0.5;

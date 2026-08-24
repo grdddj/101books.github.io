@@ -310,16 +310,25 @@ h1 {
   font-weight: 700;
 }
 
+/* The width has to be derived from the height budget and the crop's aspect
+   ratio, not guessed independently: a `max-height` that clamps a board whose
+   width was already fixed silently squashes the cells, and the stones (laid out
+   by the CSS grid) then drift away from the lines (drawn by the SVG). */
 .goban {
   --board-columns: 19;
   --board-rows: 19;
+  --board-available-height: calc(100vh - 21rem);
   box-sizing: content-box;
   position: relative;
   display: grid;
   grid-template-columns: repeat(var(--board-columns), minmax(0, 1fr));
   grid-template-rows: repeat(var(--board-rows), minmax(0, 1fr));
-  width: min(100%, calc(100vh - 17.5rem), 42rem);
-  max-height: calc(100vh - 21rem);
+  width: min(
+    100%,
+    42rem,
+    calc(var(--board-available-height) * var(--board-columns) / var(--board-rows))
+  );
+  max-height: var(--board-available-height);
   aspect-ratio: var(--board-columns) / var(--board-rows);
   overflow: hidden;
   border: 1px solid #735026;
@@ -436,8 +445,9 @@ h1 {
     padding-top: 0.6rem;
   }
 
+  /* The tighter gap and padding above give the board 1.5rem more to work with. */
   .goban {
-    width: min(100%, calc(100vh - 15rem), 42rem);
+    --board-available-height: calc(100vh - 19.5rem);
   }
 }
 

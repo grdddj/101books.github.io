@@ -1,35 +1,26 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+
+import { findChromium } from "./chromium.mjs";
 
 const execFileAsync = promisify(execFile);
 const indexSource = await readFile(new URL("../reader/static/index.html", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../reader/static/app.js", import.meta.url), "utf8");
 const appCss = await readFile(new URL("../reader/static/app.css", import.meta.url), "utf8");
 
-async function findChromium() {
-  for (const candidate of [
-    process.env.CHROMIUM_BINARY,
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/bin/google-chrome",
-  ]) {
-    if (!candidate) continue;
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Continue looking for a supported local Chromium binary.
-    }
-  }
-  return null;
-}
-
 const chromium = await findChromium();
+
+// A profile without a session token lands on the sign-in dialog and the reader
+// never starts, so every page these tests drive has to look already signed in.
+function signedInSeed() {
+  return `localStorage.setItem("static-go-reader-user", "Ada");
+    localStorage.setItem("static-go-reader-token", "test-session-token");`;
+}
 
 function response(reply, statusCode, body, contentType = "application/json; charset=utf-8") {
   reply.writeHead(statusCode, { "Content-Type": contentType });
@@ -37,7 +28,7 @@ function response(reply, statusCode, body, contentType = "application/json; char
 }
 
 function browserPage(basePath = "") {
-  const seed = '<script>localStorage.setItem("static-go-reader-user", "Ada");</script>';
+  const seed = `<script>${signedInSeed()}</script>`;
   const probe = `
     <pre id="browser-collections-result"></pre>
     <script>
@@ -132,7 +123,7 @@ function browserPage(basePath = "") {
 
 function invalidCollectionBrowserPage() {
   const seed = `<script>
-    localStorage.setItem("static-go-reader-user", "Ada");
+    ${signedInSeed()}
     localStorage.setItem("static-go-reader-collection", "advanced");
   </script>`;
   const probe = `
@@ -181,7 +172,7 @@ function invalidCollectionBrowserPage() {
 }
 
 function activityBrowserPage(basePath = "") {
-  const seed = '<script>localStorage.setItem("static-go-reader-user", "Ada");</script>';
+  const seed = `<script>${signedInSeed()}</script>`;
   const probe = `
     <pre id="browser-activity-result"></pre>
     <script>
@@ -453,7 +444,7 @@ test("Chromium opens and closes the read-only activity dialog below a base path"
     const match = stdout.match(/<pre id="browser-activity-result">([^<]*)<\/pre>/);
     assert.ok(match, "Chromium did not return the activity test result");
     const result = JSON.parse(match[1]);
-    assert.deepEqual(activityRequests, ["/tsumego/api/activity?user=Ada&limit=50"]);
+    assert.deepEqual(activityRequests, ["/tsumego/api/activity?limit=50"]);
     assert.equal(result.panelOpened, true);
     assert.equal(result.backdropVisible, true);
     assert.equal(result.focusEntered, true);

@@ -3,9 +3,13 @@
 // A service worker's default scope is its directory, which is exactly the
 // reader root (`/` locally, `/tsumego/` in production).
 
-const CACHE_VERSION = "tsumego-sw-v1";
-const SHELL_CACHE = `${CACHE_VERSION}-shell`;
-const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
+// v2 abandons the v1 caches on purpose: v1 kept a separate install-time shell
+// cache, and because caches.match() searches every cache in creation order it
+// returned that first copy forever. A deployed app.css never reached the
+// browser again. One cache, written through on every successful fetch, cannot
+// develop a stale corner like that.
+const CACHE_VERSION = "tsumego-sw-v2";
+const CACHE_NAME = `${CACHE_VERSION}-assets`;
 
 const scopeUrl = new URL("./", self.location);
 const shellUrl = scopeUrl.toString();
@@ -18,7 +22,7 @@ const SHELL_URLS = [
 ].map((path) => new URL(path, self.location).toString());
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_URLS)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS)));
   self.skipWaiting();
 });
 
@@ -39,44 +43,36 @@ function isCacheable(response) {
   return response && response.ok && response.type === "basic";
 }
 
-// Serving the cached copy first keeps launches instant; refreshing in the
-// background means a deployed fix lands on the next launch without having to
-// bump CACHE_VERSION by hand.
-async function staleWhileRevalidate(request) {
-  const cache = await caches.open(RUNTIME_CACHE);
-  // Read across every cache: the shell copies are written by install, and only
-  // refreshed copies land in the runtime cache.
-  const cached = await caches.match(request);
-  const network = fetch(request)
-    .then((response) => {
-      if (isCacheable(response)) cache.put(request, response.clone());
-      return response;
-    })
-    .catch(() => undefined);
-  const response = cached || (await network);
-  if (response) return response;
-  throw new Error("Unavailable offline");
+// The origin sends Cache-Control: no-cache, but a worker's plain fetch() still
+// went to the browser HTTP cache and came back with a superseded app.css.
+// Asking for revalidation on the request itself is not advisory, so the network
+// is always consulted. Navigation requests cannot be reconstructed this way.
+function revalidating(request) {
+  if (request.mode === "navigate") return request;
+  // Built from the URL rather than the Request: a no-cors subresource request
+  // cannot be reconstructed with an init, and silently falling back to it was
+  // enough to keep serving a superseded app.css.
+  return new Request(request.url, { cache: "reload", credentials: "same-origin" });
 }
 
+// Everything is network-first: the assets carry no content hash, so the only
+// way to guarantee a deploy is visible is to ask. The cache exists to keep the
+// reader usable offline, not to shave a round trip off a warm launch.
 async function networkFirst(request, fallbackUrl) {
-  const cache = await caches.open(RUNTIME_CACHE);
+  const cache = await caches.open(CACHE_NAME);
   try {
-    const response = await fetch(request);
+    const response = await fetch(revalidating(request));
     if (isCacheable(response)) cache.put(request, response.clone());
     return response;
   } catch (error) {
-    const cached = await caches.match(request);
+    const cached = await cache.match(request);
     if (cached) return cached;
     if (fallbackUrl) {
-      const fallback = await caches.match(fallbackUrl);
+      const fallback = await cache.match(fallbackUrl);
       if (fallback) return fallback;
     }
     throw error;
   }
-}
-
-function isReaderPath(url, suffix) {
-  return url.pathname === `${scopeUrl.pathname}${suffix}`;
 }
 
 self.addEventListener("fetch", (event) => {
@@ -94,17 +90,5 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith(`${scopeUrl.pathname}api/`)) {
-    event.respondWith(networkFirst(request));
-    return;
-  }
-
-  if (
-    isReaderPath(url, "app.css") ||
-    isReaderPath(url, "app.js") ||
-    isReaderPath(url, "manifest.webmanifest") ||
-    url.pathname.startsWith(`${scopeUrl.pathname}icons/`)
-  ) {
-    event.respondWith(staleWhileRevalidate(request));
-  }
+  event.respondWith(networkFirst(request));
 });

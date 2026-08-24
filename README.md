@@ -80,6 +80,15 @@ Collection data reaches the cache once the worker controls the page, which is
 from the second visit onwards. On a first visit followed immediately by going
 offline the shell still renders and reports the connection error.
 
+The service worker is network-first for everything and keeps a single cache.
+Both parts are deliberate. An install-time shell cache plus a runtime cache
+meant `caches.match()` kept returning the first copy it found, so a deployed
+`app.css` never reached a browser again; and a plain `fetch()` inside the worker
+was still answered from the browser HTTP cache, so the worker refetches with
+`cache: "reload"`. `tests/test_browser_service_worker.mjs` drives a real browser
+to hold both properties - a deploy is visible on the next launch, and the reader
+still works with the server unreachable.
+
 Static assets are served with `Cache-Control: no-cache` because they carry no
 content hash. A shared cache in front of the reader would otherwise pin a stale
 `app.js` for hours, and the service worker would then cache that stale copy too.

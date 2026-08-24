@@ -936,6 +936,11 @@ class HttpApiTests(unittest.TestCase):
 
         self.assertIn("/api/collections", self.log_file.read_text(encoding="utf-8"))
 
+    def test_the_log_is_no_more_readable_than_the_data_it_sits_in(self) -> None:
+        # It carries visitors' addresses, like the event log beside it.
+        self.assertEqual(self.log_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.log_file.parent.stat().st_mode & 0o777, 0o700)
+
     def test_an_unexpected_failure_answers_json_and_lands_in_the_log(self) -> None:
         # Everything the routes expect is already caught and turned into a
         # specific status; this is the case nobody predicted.

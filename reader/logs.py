@@ -16,6 +16,10 @@ import time
 from pathlib import Path
 
 LOG_FILE_NAME = "reader.log"
+# The access log holds visitors' addresses, so it is as sensitive as the rest of
+# the data directory and gets the same permissions.
+LOG_DIRECTORY_MODE = 0o700
+LOG_FILE_MODE = 0o600
 MAX_LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
@@ -48,9 +52,11 @@ def configure_logging(data_directory: Path, level: int = logging.INFO) -> Path |
     log_path = data_directory / "logs" / LOG_FILE_NAME
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.chmod(LOG_DIRECTORY_MODE)
         file_handler = logging.handlers.RotatingFileHandler(
             log_path, maxBytes=MAX_LOG_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
         )
+        log_path.chmod(LOG_FILE_MODE)
     except OSError:
         logging.getLogger(__name__).warning("Could not open %s; logging to stderr only", log_path)
         return None

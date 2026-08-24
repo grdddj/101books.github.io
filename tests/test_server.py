@@ -676,7 +676,11 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(response, {"status": "ok"})
 
     def test_collection_reader_path_serves_reader_shell(self) -> None:
-        for path in ["/collections/200-basic-go-problems", "/collections/"]:
+        for path in [
+            "/collections/200-basic-go-problems",
+            "/collections/200-basic-go-problems/1",
+            "/collections/",
+        ]:
             with self.subTest(path=path), urlopen(f"{self.base_url}{path}") as response:
                 body = response.read().decode("utf-8")
 
@@ -943,6 +947,8 @@ class HttpApiTests(unittest.TestCase):
             "/collections/one%2Ftwo",
             "/collections//",
             "/collections/one/",
+            "/collections//1",
+            "/collections/one/1/2",
         ]:
             with self.subTest(path=path):
                 request = Request(f"{self.base_url}{path}")

@@ -101,6 +101,13 @@ Cache); there is no API token on this machine.
   re-runs the whole HTTP suite under `/tsumego` to enforce this.
 - **Problem IDs** are `<booklet-slug>:<section>/<problem>@<occurrence>`, so the
   same position in two booklets tracks separately.
+- **The URL names the displayed problem**: `/collections/<slug>/<number>`, with
+  `<number>` the one-based problem number. Every move between problems rewrites
+  it with `replaceState`, so the address bar is always shareable and Back still
+  steps between booklets rather than between problems. A booklet URL with no
+  number opens the first pending problem and is rewritten to it. Because the
+  document no longer sits at a fixed depth, **a relative URL in the page resolves
+  differently per problem** - build every URL through `readerPath()`.
 - **PWA.** Every URL in `reader/static/manifest.webmanifest` is *relative* so
   one document works at both `/` and `/tsumego/`; do not hardcode a base path
   into it. `reader/static/sw.js` derives its scope from its own location. Icons

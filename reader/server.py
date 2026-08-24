@@ -805,7 +805,7 @@ class ReaderRequestHandler(SimpleHTTPRequestHandler):
         if (
             path == "/"
             or path == "/index.html"
-            or re.fullmatch(r"/collections/(?:[^/]+)?", unquote(path))
+            or re.fullmatch(r"/collections/(?:[^/]+(?:/\d+)?)?", unquote(path))
         ):
             self._send_reader_shell()
             return

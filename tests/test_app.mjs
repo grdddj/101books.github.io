@@ -414,8 +414,8 @@ test("a configured base path prefixes API calls and collection history", async (
     ["/tsumego/api/progress", "GET"],
     ["/tsumego/api/progress", "PUT"],
   ]);
-  assert.deepEqual(historyCalls, ["/tsumego/collections/advanced"]);
-  assert.equal(context.window.location.pathname, "/tsumego/collections/advanced");
+  assert.deepEqual(historyCalls, ["/tsumego/collections/advanced/1"]);
+  assert.equal(context.window.location.pathname, "/tsumego/collections/advanced/1");
 });
 
 test("the activity dialog loads base-prefixed recent events and restores keyboard focus", async () => {
@@ -535,7 +535,7 @@ test("an unknown collection URL reports an error without loading the first catal
   await context.readerTestApi.selectCollection("basic");
 
   assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
-  assert.equal(context.window.location.pathname, "/collections/basic");
+  assert.equal(context.window.location.pathname, "/collections/basic/1");
 });
 
 test("only the root and one collection segment are valid reader paths", () => {
@@ -545,12 +545,22 @@ test("only the root and one collection segment are valid reader paths", () => {
   const collection = loadApp({ pathname: "/collections/test-collection", savedName: "Ada" });
   assert.equal(collection.context.readerTestApi.getCollectionPath().kind, "collection");
   assert.equal(collection.context.readerTestApi.getCollectionPath().slug, "test-collection");
+  assert.equal(collection.context.readerTestApi.getCollectionPath().number, undefined);
+
+  const numbered = loadApp({ pathname: "/collections/test-collection/130", savedName: "Ada" });
+  assert.equal(numbered.context.readerTestApi.getCollectionPath().kind, "collection");
+  assert.equal(numbered.context.readerTestApi.getCollectionPath().slug, "test-collection");
+  assert.equal(numbered.context.readerTestApi.getCollectionPath().number, 130);
 
   const invalidPaths = [
     "/collections/missing/",
     "/collections/",
     "/anything",
     "/collections/%E0%A4",
+    "/collections/basic/1/2",
+    "/collections/basic/last",
+    "/collections/basic/-1",
+    "/collections/basic/",
   ];
   for (const pathname of invalidPaths) {
     const { context } = loadApp({ pathname, savedName: "Ada" });
@@ -564,6 +574,7 @@ test("an invalid initial path reports an error without loading the saved collect
     "/collections/",
     "/anything",
     "/collections/%E0%A4",
+    "/collections/basic/last",
   ];
   for (const pathname of invalidPaths) {
     const { fetchImpl, calls } = createCollectionFetch();
@@ -587,9 +598,76 @@ test("an invalid initial path reports an error without loading the saved collect
       });
       await context.readerTestApi.selectCollection("basic");
       assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
-      assert.equal(context.window.location.pathname, "/collections/basic");
+      assert.equal(context.window.location.pathname, "/collections/basic/1");
     }
   }
+});
+
+test("a problem number in the URL opens that problem instead of the first pending one", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements, historyReplaceCalls } = loadApp({
+    fetchImpl,
+    pathname: "/collections/advanced/3",
+    savedName: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
+  assert.equal(elements.get("#problem-ordinal").textContent, "Problem 3 of 3");
+  // The URL already names the problem, so startup has nothing to normalise.
+  assert.deepEqual(historyReplaceCalls, []);
+});
+
+test("a problem number outside the collection reports an error and loads nothing", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements } = loadApp({
+    fetchImpl,
+    pathname: "/collections/advanced/4",
+    savedName: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#collection-title").textContent, "");
+  assert.match(elements.get("#status-feedback").textContent, /problem 4 is not in this collection/i);
+  assert.equal(elements.get("#change-collection").disabled, false);
+});
+
+test("navigating rewrites the URL in place so the current problem can be shared", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, historyCalls, historyReplaceCalls } = loadApp({
+    fetchImpl,
+    pathname: "/collections/advanced/1",
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  context.readerTestApi.navigate(1);
+  context.readerTestApi.navigate(1);
+  context.readerTestApi.navigate(1);
+
+  assert.equal(context.window.location.pathname, "/collections/advanced/3");
+  assert.deepEqual(historyReplaceCalls, ["/collections/advanced/2", "/collections/advanced/3"]);
+  assert.deepEqual(historyCalls, []);
+});
+
+test("Back returns to the problem the URL named, not the first pending one", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements, firePopstate } = loadApp({
+    fetchImpl,
+    pathname: "/collections/advanced/3",
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+  await context.readerTestApi.selectCollection("basic");
+
+  context.window.location.pathname = "/collections/advanced/3";
+  await firePopstate();
+
+  assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
 });
 
 test("a valid saved collection is loaded after the catalog and starts at its first revisit", async () => {
@@ -741,7 +819,7 @@ test("selecting a collection persists it, pushes a shareable URL, closes the pan
   await context.readerTestApi.selectCollection("advanced");
 
   assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
-  assert.deepEqual(historyCalls, ["/collections/advanced"]);
+  assert.deepEqual(historyCalls, ["/collections/advanced/2"]);
   assert.equal(elements.get("#collection-panel").hidden, true);
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
   assert.equal(elements.get("#progress-summary").textContent, "Solved: 1 · Revisit: 1 · Total: 3");
@@ -762,7 +840,7 @@ test("popstate loads the current collection URL without adding a history entry",
   await firePopstate();
 
   assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
-  assert.deepEqual(historyCalls, ["/collections/advanced"]);
+  assert.deepEqual(historyCalls, ["/collections/advanced/1"]);
 });
 
 test("popstate rejects an invalid collection path without loading a saved collection", async () => {
@@ -819,7 +897,7 @@ test("popstate waits for a pending save and then reconciles to the latest URL", 
   await Promise.all([save, historyLoad]);
 
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
-  assert.equal(context.window.location.pathname, "/collections/advanced");
+  assert.equal(context.window.location.pathname, "/collections/advanced/1");
 });
 
 test("rapid popstate events discard a stale collection load and reconcile the latest URL", async () => {
@@ -847,7 +925,7 @@ test("rapid popstate events discard a stale collection load and reconcile the la
   await Promise.all([back, forward]);
 
   assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
-  assert.equal(context.window.location.pathname, "/collections/basic");
+  assert.equal(context.window.location.pathname, "/collections/basic/1");
   assert.equal(localStorage.get("static-go-reader-collection"), "basic");
 });
 
@@ -967,8 +1045,10 @@ test("a failed history load restores the URL of the still-visible collection", a
   await firePopstate();
 
   assert.equal(elements.get("#collection-title").textContent, "Basic shapes");
-  assert.equal(context.window.location.pathname, "/collections/basic");
-  assert.deepEqual(historyReplaceCalls, ["/collections/basic"]);
+  assert.equal(context.window.location.pathname, "/collections/basic/1");
+  // The first replace is startup normalising the URL to a problem, the second
+  // is the failed Back being rolled back to it.
+  assert.deepEqual(historyReplaceCalls, ["/collections/basic/1", "/collections/basic/1"]);
   assert.match(elements.get("#status-feedback").textContent, /history load failed/i);
 });
 

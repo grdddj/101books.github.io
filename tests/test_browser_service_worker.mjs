@@ -177,8 +177,11 @@ test("the worker does not strip the session token from API requests", { skip }, 
   await withReader(8214, async ({ base, browser }) => {
     const { context, page } = await openReader(browser, base);
 
-    const result = await page.evaluate(async () => {
-      const login = await fetch(new URL("api/session", location.href), {
+    // Resolved against `base`, not `location.href`: the reader rewrites its own
+    // URL to name the displayed problem, so the document no longer sits at the
+    // root of the API.
+    const result = await page.evaluate(async (readerBase) => {
+      const login = await fetch(new URL("api/session", readerBase), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user: "swauth", password: "correct horse battery", create: true }),
@@ -186,11 +189,11 @@ test("the worker does not strip the session token from API requests", { skip }, 
       const { token } = await login.json();
       // This request goes through the worker, which rebuilds it to force
       // revalidation; rebuilding without the headers made every call 401.
-      const progress = await fetch(new URL("api/progress", location.href), {
+      const progress = await fetch(new URL("api/progress", readerBase), {
         headers: { Authorization: `Bearer ${token}` },
       });
       return { login: login.status, progress: progress.status };
-    });
+    }, base);
 
     assert.equal(result.login, 200);
     assert.equal(result.progress, 200);

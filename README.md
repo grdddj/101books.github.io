@@ -20,8 +20,12 @@ The reader depends only on the standard library, so no virtual environment or
 dependency install is needed.
 
 Open `http://127.0.0.1:8000/` after starting the server. Every booklet can also
-be opened directly at `http://127.0.0.1:8000/collections/<slug>`; the root URL
-restores the last booklet selected in that browser. Progress belongs to a password-protected profile. The reader asks for a name and
+be opened directly at `http://127.0.0.1:8000/collections/<slug>`, and a single
+problem at `http://127.0.0.1:8000/collections/<slug>/<problem-number>`; the root
+URL restores the last booklet selected in that browser. The address bar always
+names the problem on screen - paging through a booklet rewrites it in place - so
+any position can be shared or reloaded. A booklet URL without a number opens the
+first unsolved or flagged problem and is rewritten to that one. Progress belongs to a password-protected profile. The reader asks for a name and
 password through its own dialog and shows the name in the header; selecting it
 reopens the dialog to switch profile or sign out. Use **Change collection** to browse the API-sorted booklet
 catalog and switch collections. Use **Activity** to review the current profile's

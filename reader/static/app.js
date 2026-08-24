@@ -387,23 +387,36 @@ function getSavedCollection(collectionCatalog) {
     : collectionCatalog[0].slug;
 }
 
-function collectionPath(slug) {
-  return readerPath(`/collections/${encodeURIComponent(slug)}`);
+function collectionPath(slug, number) {
+  const path = `/collections/${encodeURIComponent(slug)}`;
+  return readerPath(number === undefined ? path : `${path}/${number}`);
+}
+
+function currentProblemPath() {
+  return collectionPath(collection.slug, collection.problems[currentIndex].number);
 }
 
 function getCollectionPath(pathname = window.location.pathname) {
   const internalPathname = stripBasePath(pathname);
   if (internalPathname === null) return { kind: "invalid" };
   if (internalPathname === "/") return { kind: "root" };
-  const match = /^\/collections\/([^/]+)$/.exec(internalPathname);
+  const match = /^\/collections\/([^/]+)(?:\/(\d+))?$/.exec(internalPathname);
   if (!match) return { kind: "invalid" };
   try {
     const slug = decodeURIComponent(match[1]);
     if (!slug || slug.includes("/")) return { kind: "invalid" };
-    return { kind: "collection", slug };
+    return { kind: "collection", slug, number: match[2] && Number(match[2]) };
   } catch {
     return { kind: "invalid" };
   }
+}
+
+// Problem numbers are one-based and dense, so this is really an index lookup;
+// searching by number keeps the URL honest if that ever stops being true.
+function problemIndexForNumber(problems, number) {
+  const index = problems.findIndex((problem) => problem.number === number);
+  if (index === -1) throw new Error(`Problem ${number} is not in this collection.`);
+  return index;
 }
 
 function stripBasePath(pathname) {
@@ -640,6 +653,7 @@ function navigate(delta) {
     Math.min(collection.problems.length - 1, currentIndex + delta),
   );
   renderReader();
+  syncProblemPath();
 }
 
 function handleWheel(event) {
@@ -979,20 +993,39 @@ async function openActivityPanel(event) {
   }
 }
 
-async function loadActiveCollection(slug, historyMode = "none", shouldApply = () => true) {
+async function loadActiveCollection(
+  slug,
+  historyMode = "none",
+  shouldApply = () => true,
+  number = undefined,
+) {
   const nextCollection = await fetchJson(`/api/collections/${encodeURIComponent(slug)}`);
   if (!shouldApply()) return false;
   const nextStatuses = (await fetchJson("/api/progress")).problems;
   if (!shouldApply()) return false;
+  const nextIndex =
+    number === undefined
+      ? firstPendingIndex(nextCollection.problems, nextStatuses)
+      : problemIndexForNumber(nextCollection.problems, number);
   collection = nextCollection;
   statuses = nextStatuses;
-  currentIndex = firstPendingIndex(collection.problems, statuses);
+  currentIndex = nextIndex;
   renderCollectionList();
   renderReader();
-  if (historyMode === "push") {
-    window.history.pushState({}, "", collectionPath(slug));
-  }
+  syncProblemPath(historyMode);
   return true;
+}
+
+// The displayed problem is part of the URL, so every path into a new problem -
+// startup, the chooser, Back, Next - ends here to keep the address bar honest.
+function syncProblemPath(historyMode = "replace") {
+  const path = currentProblemPath();
+  if (historyMode === "push") {
+    window.history.pushState({}, "", path);
+  } else if (window.location.pathname !== path) {
+    window.history.replaceState({}, "", path);
+  }
+  displayedPathname = path;
 }
 
 function restoreControlsAfterCollectionOperation() {
@@ -1017,7 +1050,6 @@ async function selectCollection(slug) {
       () => startingHistoryRequestId === historyRequestId,
     );
     if (!loaded) return;
-    displayedPathname = collectionPath(slug);
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     statusFeedback.textContent = `Selected ${collection.title}.`;
   } catch (error) {
@@ -1030,7 +1062,7 @@ async function selectCollection(slug) {
   }
 }
 
-function getHistoryCollectionSlug(pathname) {
+function getHistoryTarget(pathname) {
   const path = getCollectionPath(pathname);
   if (path.kind === "invalid") {
     throw new Error("Invalid collection URL.");
@@ -1039,7 +1071,7 @@ function getHistoryCollectionSlug(pathname) {
   if (!catalog.some((item) => item.slug === slug)) {
     throw new Error("Unknown collection in URL.");
   }
-  return slug;
+  return { slug, number: path.number };
 }
 
 function restoreDisplayedPath(error) {
@@ -1054,14 +1086,14 @@ async function reconcileHistory() {
     const pathname = pendingHistoryPathname;
     const requestId = historyRequestId;
     try {
-      const slug = getHistoryCollectionSlug(pathname);
+      const { slug, number } = getHistoryTarget(pathname);
       const loaded = await loadActiveCollection(
         slug,
         "none",
         () => requestId === historyRequestId,
+        number,
       );
       if (!loaded) continue;
-      displayedPathname = pathname;
       localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
       pendingHistoryPathname = undefined;
     } catch (error) {
@@ -1133,15 +1165,14 @@ async function startReader() {
       throw new Error("Unknown collection in URL.");
     }
     const slug = path.kind === "collection" ? path.slug : getSavedCollection(catalog);
-    const pathname = window.location.pathname;
     startupStage = "collection";
     const loaded = await loadActiveCollection(
       slug,
       "none",
       () => startingHistoryRequestId === historyRequestId,
+      path.number,
     );
     if (!loaded) return;
-    displayedPathname = pathname;
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
     statusFeedback.textContent = `Tracking progress for ${user}.`;
   } catch (error) {

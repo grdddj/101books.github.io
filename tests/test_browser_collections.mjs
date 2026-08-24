@@ -88,6 +88,10 @@ function browserPage(basePath = "") {
           const selectionRestoredFocus = document.activeElement === changeButton;
           history.back();
           await waitFor(() => document.querySelector("#collection-title").textContent === "200 Basic Go Problems");
+          const restoredTitle = document.querySelector("#collection-title").textContent;
+          const restoredPathname = window.location.pathname;
+          await waitFor(() => !document.querySelector("#next").disabled);
+          document.querySelector("#next").click();
           result.textContent = JSON.stringify({
             panelOpened,
             visibleCatalog,
@@ -101,11 +105,13 @@ function browserPage(basePath = "") {
             escapeRestoredFocus,
             closeRestoredFocus,
             selectedPathname,
-            restoredTitle: document.querySelector("#collection-title").textContent,
-            restoredPathname: window.location.pathname,
+            restoredTitle,
+            restoredPathname,
             selectedCollection,
             progress: selectedProgress,
             selectionRestoredFocus,
+            nextOrdinal: document.querySelector("#problem-ordinal").textContent,
+            nextPathname: window.location.pathname,
           });
         } catch (error) {
           result.textContent = JSON.stringify({ error: error.message });
@@ -383,12 +389,14 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
       wheelBlocked: true,
       escapeRestoredFocus: true,
       closeRestoredFocus: true,
-      selectedPathname: "/collections/advanced",
+      selectedPathname: "/collections/advanced/2",
       restoredTitle: "200 Basic Go Problems",
-      restoredPathname: "/collections/200-basic-go-problems",
+      restoredPathname: "/collections/200-basic-go-problems/1",
       selectedCollection: "advanced",
       progress: "Solved: 1 · Revisit: 1 · Total: 3",
       selectionRestoredFocus: true,
+      nextOrdinal: "Problem 2 of 2",
+      nextPathname: "/collections/200-basic-go-problems/2",
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -413,11 +421,12 @@ test("Chromium keeps collection navigation inside a configured base path", { ski
     const match = stdout.match(/<pre id="browser-collections-result">([^<]*)<\/pre>/);
     assert.ok(match, "Chromium did not return the base-path test result");
     const result = JSON.parse(match[1]);
-    assert.equal(result.selectedPathname, "/tsumego/collections/advanced");
+    assert.equal(result.selectedPathname, "/tsumego/collections/advanced/1");
     assert.equal(
       result.restoredPathname,
-      "/tsumego/collections/200-basic-go-problems",
+      "/tsumego/collections/200-basic-go-problems/1",
     );
+    assert.equal(result.nextPathname, "/tsumego/collections/200-basic-go-problems/2");
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     await rm(directory, { force: true, recursive: true });
@@ -485,7 +494,7 @@ test("Chromium recovers from the direct invalid collection route", { skip: !chro
       chooserEnabled: true,
       optionCount: 2,
       recoveredTitle: "200 Basic Go Problems",
-      recoveredPathname: "/collections/200-basic-go-problems",
+      recoveredPathname: "/collections/200-basic-go-problems/1",
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

@@ -358,7 +358,7 @@ async function reloadForCurrentUser() {
   setControlsDisabled(true);
   try {
     await loadActiveCollection(collection.slug);
-    statusFeedback.textContent = `Tracking progress for ${user}.`;
+    statusFeedback.textContent = "";
   } catch (error) {
     showError(error);
   } finally {
@@ -641,7 +641,7 @@ async function setCurrentStatus(status) {
     } else {
       renderReader();
     }
-    statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
+    statusFeedback.textContent = "";
   } catch (error) {
     isSaving = false;
     showError(error);
@@ -1181,7 +1181,7 @@ async function startReader() {
     );
     if (!loaded) return;
     localStorage.setItem(COLLECTION_STORAGE_KEY, slug);
-    statusFeedback.textContent = `Tracking progress for ${user}.`;
+    statusFeedback.textContent = "";
   } catch (error) {
     if (startupStage === "catalog") {
       pendingHistoryPathname = undefined;

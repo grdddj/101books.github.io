@@ -1258,7 +1258,9 @@ test("successful status saves advance one problem without passing the final prob
 
   await context.readerTestApi.setCurrentStatus("revisit");
   assert.equal(context.readerTestApi.getCurrentIndex(), 5);
-  assert.equal(elements.get("#status-feedback").textContent, "Problem 6 marked revisit.");
+  // A successful save clears the line rather than narrating itself; it exists
+  // to carry problems, and a stale error must not outlive the save that fixed it.
+  assert.equal(elements.get("#status-feedback").textContent, "");
   assert.equal(elements.get("#revisit").attributes["aria-pressed"], "true");
 });
 
@@ -1305,6 +1307,26 @@ test("marking an already-solved problem again is ignored", async () => {
 
   assert.equal(calls.length, before);
   assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+});
+
+test("a successful save clears an error left by the previous one", async () => {
+  let failNext = true;
+  const inner = createFetch();
+  const fetchImpl = async (path, options = {}) => {
+    if (path === "/api/progress" && options.method === "PUT" && failNext) {
+      failNext = false;
+      throw new Error("save failed");
+    }
+    return inner(path, options);
+  };
+  const { context, elements } = loadApp({ fetchImpl, savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("revisit");
+  assert.equal(elements.get("#status-feedback").textContent, "save failed");
+
+  await context.readerTestApi.setCurrentStatus("revisit");
+  assert.equal(elements.get("#status-feedback").textContent, "");
 });
 
 test("failed status saves do not change the current problem", async () => {

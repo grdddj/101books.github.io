@@ -376,11 +376,15 @@ function normalizeUserName(name) {
   return normalized && normalized.length <= 80 ? normalized : null;
 }
 
+// Never backwards. A flagged problem used to count as pending, so flagging one
+// cost you your place in the booklet and the flag went unused. Flags are the
+// drill list for after the pass instead: they only decide where you land once
+// nothing in the booklet is unseen.
 function firstPendingIndex(problems, statuses) {
-  const index = problems.findIndex(
-    ({ id }) => !statuses[id] || statuses[id].status === "revisit",
-  );
-  return index === -1 ? 0 : index;
+  const unseen = problems.findIndex(({ id }) => !statuses[id]);
+  if (unseen !== -1) return unseen;
+  const flagged = problems.findIndex(({ id }) => statuses[id].status === "revisit");
+  return flagged === -1 ? 0 : flagged;
 }
 
 function getSavedCollection(collectionCatalog) {

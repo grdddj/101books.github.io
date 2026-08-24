@@ -673,7 +673,9 @@ test("Back returns to the problem the URL named, not the first pending one", asy
   assert.equal(context.readerTestApi.getCurrentIndex(), 2);
 });
 
-test("a valid saved collection is loaded after the catalog and starts at its first revisit", async () => {
+test("a valid saved collection is loaded after the catalog and resumes at the first unseen problem", async () => {
+  // Flagging problem 2 must not drag the resume position back to it: that cost
+  // is the reason Revisit went unused.
   const { fetchImpl, calls } = createCollectionFetch({
     problems: {
       "advanced:1@1": { status: "solved" },
@@ -695,7 +697,38 @@ test("a valid saved collection is loaded after the catalog and starts at its fir
   ]);
   assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
+});
+
+test("a booklet with nothing left unseen resumes at the first flagged problem", async () => {
+  // Once the pass is over, the flags become the drill list.
+  const { fetchImpl } = createCollectionFetch({
+    problems: {
+      "advanced:1@1": { status: "solved" },
+      "advanced:2@1": { status: "revisit" },
+      "advanced:3@1": { status: "solved" },
+    },
+  });
+  const { context } = loadApp({ fetchImpl, savedName: "Ada", savedCollection: "advanced" });
+
+  await context.readerTestApi.startReader();
+
   assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
+
+test("a fully solved booklet reopens at its first problem", async () => {
+  const { fetchImpl } = createCollectionFetch({
+    problems: {
+      "advanced:1@1": { status: "solved" },
+      "advanced:2@1": { status: "solved" },
+      "advanced:3@1": { status: "solved" },
+    },
+  });
+  const { context } = loadApp({ fetchImpl, savedName: "Ada", savedCollection: "advanced" });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
 });
 
 test("an invalid saved collection falls back to the first API-sorted catalog entry", async () => {
@@ -822,11 +855,13 @@ test("selecting a collection persists it, pushes a shareable URL, closes the pan
   await context.readerTestApi.selectCollection("advanced");
 
   assert.equal(localStorage.get("static-go-reader-collection"), "advanced");
-  assert.deepEqual(historyCalls, ["/collections/advanced/2"]);
+  // Problem 2 is flagged and problem 3 has never been seen, so the booklet
+  // opens at 3: the flag waits until the pass is finished.
+  assert.deepEqual(historyCalls, ["/collections/advanced/3"]);
   assert.equal(elements.get("#collection-panel").hidden, true);
   assert.equal(elements.get("#collection-title").textContent, "Advanced shapes");
   assert.equal(elements.get("#progress-summary").textContent, "Solved: 1 · Revisit: 1 · Total: 3");
-  assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
 });
 
 test("popstate loads the current collection URL without adding a history entry", async () => {

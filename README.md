@@ -152,6 +152,13 @@ board and the later one is captioned beneath it as `9 at 5`.
 
 Successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status. Returning to a problem already marked solved shows **Already solved** in place of the Solved button, and it cannot be recorded twice.
 
+Opening a booklet resumes at the first problem you have never seen. **Revisit**
+flags a problem without costing you that place: flagged problems only decide
+where you land once nothing in the booklet is unseen, at which point re-opening
+it starts at the first flag and the booklet becomes a drill list. Flagging is
+therefore free during a pass, which it was not when a flag pulled you back to it
+every time.
+
 ## Install on a phone
 
 The reader ships as a progressive web app, so it can be added to a phone's home

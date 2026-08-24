@@ -131,6 +131,12 @@ Cache); there is no API token on this machine.
   re-runs the whole HTTP suite under `/tsumego` to enforce this.
 - **Problem IDs** are `<booklet-slug>:<section>/<problem>@<occurrence>`, so the
   same position in two booklets tracks separately.
+- **`firstPendingIndex` never goes backwards.** Pending means "no record at
+  all"; a `revisit` flag is deliberately *not* pending. It used to be, so
+  flagging a problem cost you your place in the booklet and the feature went
+  unused - 145 activity events with zero revisits. Flags now only decide where
+  you land once nothing is unseen, turning a finished booklet into a drill list.
+  Do not fold them back into the first branch.
 - **The URL names the displayed problem**: `/collections/<slug>/<number>`, with
   `<number>` the one-based problem number. Every move between problems rewrites
   it with `replaceState`, so the address bar is always shareable and Back still

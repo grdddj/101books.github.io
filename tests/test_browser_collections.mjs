@@ -389,7 +389,7 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
       wheelBlocked: true,
       escapeRestoredFocus: true,
       closeRestoredFocus: true,
-      selectedPathname: "/collections/advanced/2",
+      selectedPathname: "/collections/advanced/3",
       restoredTitle: "200 Basic Go Problems",
       restoredPathname: "/collections/200-basic-go-problems/1",
       selectedCollection: "advanced",

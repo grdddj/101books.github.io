@@ -60,6 +60,18 @@ derives its own base from its script location; because it is served from the
 reader root, its default scope is exactly the reader and nothing else on the
 domain.
 
+Offline the reader serves the cached shell and the last booklet you opened, so
+you can keep paging through problems. Marking a problem solved needs the server;
+it reports `You appear to be offline. Progress was not saved.` when the device
+has no connection and `Could not reach the server. Progress was not saved.` when
+the device is online but the service is down. There is no write queue, so the
+action is refused rather than dropped silently. Only a rejected request is
+translated this way; errors the server itself returns keep their own message.
+
+Collection data reaches the cache once the worker controls the page, which is
+from the second visit onwards. On a first visit followed immediately by going
+offline the shell still renders and reports the connection error.
+
 Regenerate the icons after changing the artwork:
 
 ```bash

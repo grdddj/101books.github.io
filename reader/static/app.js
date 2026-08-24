@@ -47,10 +47,26 @@ const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
 
 async function fetchJson(path, options = {}) {
-  const response = await fetch(readerPath(path), options);
+  let response;
+  try {
+    response = await fetch(readerPath(path), options);
+  } catch (error) {
+    // fetch rejects with a TypeError only when the request never completed;
+    // server-side failures arrive as a normal response and keep their message.
+    if (error.name !== "TypeError") throw error;
+    throw new Error(connectionErrorMessage(options.method));
+  }
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || "Request failed");
   return body;
+}
+
+// Reads are usually satisfied from the service worker cache, so a failed
+// request is either a write or a genuinely cold start.
+function connectionErrorMessage(method) {
+  const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const reason = isOffline ? "You appear to be offline." : "Could not reach the server.";
+  return method && method !== "GET" ? `${reason} Progress was not saved.` : reason;
 }
 
 function readerPath(path) {
@@ -318,7 +334,7 @@ async function setCurrentStatus(status) {
     statusFeedback.textContent = `Problem ${problem.number} marked ${status}.`;
   } catch (error) {
     isSaving = false;
-    statusFeedback.textContent = error.message;
+    showError(error);
     if (pendingHistoryPathname !== undefined) {
       startHistoryReconciliation();
       return;

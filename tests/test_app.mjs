@@ -52,6 +52,7 @@ function loadApp({
   pathname = "/",
   serviceWorkerSupported = true,
   serviceWorkerFails = false,
+  onLine = true,
 }) {
   const elements = new Map();
   const documentState = { activeElement: null };
@@ -76,6 +77,7 @@ function loadApp({
   const serviceWorkerRegistrations = [];
   const navigator = serviceWorkerSupported
     ? {
+        onLine,
         serviceWorker: {
           async register(url, options) {
             if (serviceWorkerFails) throw new Error("registration blocked");
@@ -84,7 +86,7 @@ function loadApp({
           },
         },
       }
-    : {};
+    : { onLine };
   const window = {
     READER_BASE_PATH: basePath,
     addEventListener(event, listener) {
@@ -222,7 +224,7 @@ function createProblems() {
   }));
 }
 
-function createFetch({ rejectPut = false } = {}) {
+function createFetch({ rejectPut = false, putNetworkError = false } = {}) {
   const problems = createProblems();
   return async (path, options = {}) => {
     if (path === "/api/collections") {
@@ -243,6 +245,7 @@ function createFetch({ rejectPut = false } = {}) {
       return response({ problems: {} });
     }
     if (path === "/api/progress" && options.method === "PUT") {
+      if (putNetworkError) throw networkError();
       if (rejectPut) throw new Error("save failed");
       const { problem_id: problemId, status } = JSON.parse(options.body);
       return response({ problems: { [problemId]: { status } } });
@@ -1233,4 +1236,67 @@ test("keeps running when service worker registration is rejected", async () => {
 
   assert.equal(await context.readerTestApi.registerServiceWorker(), undefined);
   assert.deepEqual(serviceWorkerRegistrations, []);
+});
+
+function networkError() {
+  const error = new Error("Failed to fetch");
+  error.name = "TypeError";
+  return error;
+}
+
+test("reports an offline message when the catalog cannot be loaded", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: async () => {
+      throw networkError();
+    },
+    promptResult: "Ada",
+    onLine: false,
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#status-feedback").textContent, "You appear to be offline.");
+});
+
+test("reports an offline message when a save cannot reach the server", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createFetch({ putNetworkError: true }),
+    promptResult: "Ada",
+    onLine: false,
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(
+    elements.get("#status-feedback").textContent,
+    "You appear to be offline. Progress was not saved.",
+  );
+});
+
+test("distinguishes an unreachable server from a disconnected device", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createFetch({ putNetworkError: true }),
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(
+    elements.get("#status-feedback").textContent,
+    "Could not reach the server. Progress was not saved.",
+  );
+});
+
+test("keeps server-side error messages instead of reporting a connection problem", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createFetch({ rejectPut: true }),
+    promptResult: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(elements.get("#status-feedback").textContent, "save failed");
 });

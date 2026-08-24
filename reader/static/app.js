@@ -8,6 +8,7 @@ const previousButton = document.querySelector("#previous");
 const solvedButton = document.querySelector("#solved");
 const revisitButton = document.querySelector("#revisit");
 const nextButton = document.querySelector("#next");
+const profileButton = document.querySelector("#profile");
 const changeCollectionButton = document.querySelector("#change-collection");
 const collectionPanel = document.querySelector("#collection-panel");
 const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
@@ -45,6 +46,7 @@ let activeMillisecondsBeforePause = 0;
 let visibleSince;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
+const USER_STORAGE_KEY = "static-go-reader-user";
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
@@ -109,18 +111,73 @@ function handleVisibilityChange() {
 }
 
 function getOrPromptUser() {
-  const key = "static-go-reader-user";
-  const existing = normalizeUserName(localStorage.getItem(key));
+  const existing = normalizeUserName(localStorage.getItem(USER_STORAGE_KEY));
   if (existing) {
-    localStorage.setItem(key, existing);
+    localStorage.setItem(USER_STORAGE_KEY, existing);
     return existing;
   }
 
-  localStorage.removeItem(key);
+  localStorage.removeItem(USER_STORAGE_KEY);
   const name = normalizeUserName(window.prompt("Your name for local progress:", ""));
   if (!name) throw new Error("A valid name is required to track progress.");
-  localStorage.setItem(key, name);
+  localStorage.setItem(USER_STORAGE_KEY, name);
   return name;
+}
+
+function renderProfile() {
+  if (!profileButton) return;
+  profileButton.textContent = user || "Sign in";
+  profileButton.setAttribute(
+    "aria-label",
+    user ? `Signed in as ${user}. Change name or sign out.` : "Sign in",
+  );
+  profileButton.disabled = false;
+}
+
+// A mistyped name used to be permanent: it was written to localStorage on the
+// first visit and nothing could reach it afterwards.
+async function switchProfile() {
+  if (isSaving || isLoadingCollection || isDialogOpen()) return;
+  const answer = window.prompt(
+    `Signed in as ${user}. Enter a different name, or leave empty to sign out:`,
+    user,
+  );
+  if (answer === null) return;
+
+  const name = normalizeUserName(answer);
+  if (name === user) return;
+  if (!name) {
+    localStorage.removeItem(USER_STORAGE_KEY);
+    user = undefined;
+    renderProfile();
+    try {
+      user = getOrPromptUser();
+    } catch (error) {
+      setControlsDisabled(true);
+      showError(error);
+      return;
+    }
+  } else {
+    user = name;
+    localStorage.setItem(USER_STORAGE_KEY, name);
+  }
+  renderProfile();
+  await reloadForCurrentUser();
+}
+
+async function reloadForCurrentUser() {
+  if (!hasCollection()) return;
+  isLoadingCollection = true;
+  setControlsDisabled(true);
+  try {
+    await loadActiveCollection(collection.slug);
+    statusFeedback.textContent = `Tracking progress for ${user}.`;
+  } catch (error) {
+    showError(error);
+  } finally {
+    isLoadingCollection = false;
+    restoreControlsAfterCollectionOperation();
+  }
 }
 
 function normalizeUserName(name) {
@@ -496,6 +553,9 @@ function setControlsDisabled(disabled) {
 function setCollectionControlsDisabled(disabled) {
   if (changeCollectionButton) changeCollectionButton.disabled = disabled;
   if (activityButton) activityButton.disabled = disabled;
+  // The profile stays reachable once a name is known, so a wrong name can be
+  // corrected even when the catalog failed to load.
+  if (profileButton) profileButton.disabled = !user;
   for (const { option } of collectionButtons) {
     option.disabled = disabled;
   }
@@ -825,6 +885,7 @@ async function startReader() {
   try {
     setControlsDisabled(true);
     user = getOrPromptUser();
+    renderProfile();
     catalog = await fetchJson("/api/collections");
     renderCollectionList();
     const path = getCollectionPath();
@@ -865,6 +926,7 @@ previousButton.addEventListener("click", () => navigate(-1));
 nextButton.addEventListener("click", () => navigate(1));
 solvedButton.addEventListener("click", () => setCurrentStatus("solved"));
 revisitButton.addEventListener("click", () => setCurrentStatus("revisit"));
+profileButton?.addEventListener("click", switchProfile);
 changeCollectionButton?.addEventListener("click", openCollectionPanel);
 closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
 activityButton?.addEventListener("click", openActivityPanel);

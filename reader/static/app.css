@@ -54,6 +54,14 @@ h1 {
   font-size: clamp(1.1rem, 3vw, 1.5rem);
 }
 
+.profile-button {
+  max-width: 9rem;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .header-content > button,
 .collection-panel button,
 .activity-panel button {
@@ -217,7 +225,7 @@ h1 {
   grid-template-columns: repeat(var(--board-columns), minmax(0, 1fr));
   grid-template-rows: repeat(var(--board-rows), minmax(0, 1fr));
   width: min(100%, calc(100vh - 17.5rem), 42rem);
-  max-height: calc(100vh - 20.5rem);
+  max-height: calc(100vh - 21rem);
   aspect-ratio: var(--board-columns) / var(--board-rows);
   overflow: hidden;
   border: 1px solid #735026;

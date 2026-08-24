@@ -105,7 +105,7 @@ function loadApp({
     },
     location,
     prompt() {
-      return promptResult;
+      return typeof promptResult === "function" ? promptResult() : promptResult;
     },
     setTimeout: setTimer,
   };
@@ -180,6 +180,7 @@ globalThis.readerTestApi = {
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
   formatDuration: typeof formatDuration === "function" ? formatDuration : undefined,
   registerServiceWorker: typeof registerServiceWorker === "function" ? registerServiceWorker : undefined,
+  switchProfile: typeof switchProfile === "function" ? switchProfile : undefined,
   renderBoard,
   selectCollection: typeof selectCollection === "function" ? selectCollection : undefined,
   setCurrentStatus,
@@ -1381,4 +1382,66 @@ test("shows the recorded duration in the activity list", async () => {
       `Revisit · Basic shapes · Problem 1 · ${new Date("2026-08-23T12:30:00Z").toLocaleString()}`,
     ],
   );
+});
+
+test("shows the signed-in name in the header", async () => {
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#profile").textContent, "Ada");
+  assert.match(elements.get("#profile").attributes["aria-label"], /Signed in as Ada/);
+});
+
+test("switching to another name reloads that profile's progress", async () => {
+  const requested = [];
+  const inner = createFetch();
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path.startsWith("/api/progress?user=")) requested.push(path);
+      return inner(path, options);
+    },
+    savedName: "Ada",
+    promptResult: "Grace",
+  });
+  await context.readerTestApi.startReader();
+  requested.length = 0;
+
+  await context.readerTestApi.switchProfile();
+
+  assert.equal(elements.get("#profile").textContent, "Grace");
+  assert.equal(localStorage.get("static-go-reader-user"), "Grace");
+  assert.deepEqual(requested, ["/api/progress?user=Grace"]);
+});
+
+test("cancelling the profile prompt keeps the current name", async () => {
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "Ada",
+    promptResult: null,
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.switchProfile();
+
+  assert.equal(elements.get("#profile").textContent, "Ada");
+  assert.equal(localStorage.get("static-go-reader-user"), "Ada");
+});
+
+test("an empty name signs out and asks for a new one", async () => {
+  let prompts = 0;
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl: createFetch(),
+    savedName: "Ada",
+    // First prompt is the switch dialog (empty = sign out), second is the
+    // sign-in that follows it.
+    promptResult: () => (prompts++ === 0 ? "   " : "Grace"),
+  });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.switchProfile();
+
+  assert.equal(prompts, 2);
+  assert.equal(elements.get("#profile").textContent, "Grace");
+  assert.equal(localStorage.get("static-go-reader-user"), "Grace");
 });

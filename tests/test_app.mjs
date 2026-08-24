@@ -1262,6 +1262,51 @@ test("successful status saves advance one problem without passing the final prob
   assert.equal(elements.get("#revisit").attributes["aria-pressed"], "true");
 });
 
+test("an already-solved problem shows an inert Already solved button", async () => {
+  const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  const solved = elements.get("#solved");
+  assert.equal(solved.textContent, "Solved");
+  assert.equal(solved.disabled, false);
+
+  await context.readerTestApi.setCurrentStatus("solved");
+  context.readerTestApi.navigate(-1);
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+  assert.equal(solved.textContent, "Already solved");
+  assert.equal(solved.disabled, true);
+  assert.equal(solved.attributes["aria-pressed"], "true");
+
+  // Orange, and at full opacity: the disabled treatment would fade it into
+  // looking broken rather than settled.
+  assert.match(appCss, /#solved\.is-selected[^{]*{[^}]*background:\s*#e08a1e;/);
+  assert.match(appCss, /#solved\.is-selected:disabled[^{]*{[^}]*opacity:\s*1;/);
+
+  context.readerTestApi.navigate(1);
+  assert.equal(solved.textContent, "Solved");
+  assert.equal(solved.disabled, false);
+});
+
+test("marking an already-solved problem again is ignored", async () => {
+  const calls = [];
+  const inner = createFetch();
+  const fetchImpl = async (path, options = {}) => {
+    calls.push([path, options.method ?? "GET"]);
+    return inner(path, options);
+  };
+  const { context } = loadApp({ fetchImpl, savedName: "Ada" });
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.setCurrentStatus("solved");
+  context.readerTestApi.navigate(-1);
+  const before = calls.length;
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(calls.length, before);
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+});
+
 test("failed status saves do not change the current problem", async () => {
   const { context } = loadApp({
     fetchImpl: createFetch({ rejectPut: true }),

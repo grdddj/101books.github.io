@@ -580,10 +580,14 @@ function renderReader() {
     progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
     previousButton.disabled = controlsDisabled || currentIndex === 0;
     nextButton.disabled = controlsDisabled || collection.problems.length === currentIndex + 1;
-    solvedButton.disabled = controlsDisabled;
+    // A solved problem has nothing left to record, so Solved stops being an
+    // action and becomes a label.
+    const isSolved = currentStatus === "solved";
+    solvedButton.textContent = isSolved ? "Already solved" : "Solved";
+    solvedButton.disabled = controlsDisabled || isSolved;
     revisitButton.disabled = controlsDisabled;
     setCollectionControlsDisabled(controlsDisabled);
-    setSelectedStatus(solvedButton, currentStatus === "solved");
+    setSelectedStatus(solvedButton, isSolved);
     setSelectedStatus(revisitButton, currentStatus === "revisit");
     renderBoard(problem);
     return true;
@@ -608,6 +612,9 @@ async function setCurrentStatus(status) {
 
   const submittedIndex = currentIndex;
   const problem = collection.problems[submittedIndex];
+  // The button is disabled in this state, but the guard keeps a keyboard or
+  // programmatic path from re-recording a solve that is already stored.
+  if (status === "solved" && statuses[problem.id]?.status === "solved") return;
   isSaving = true;
   setControlsDisabled(true);
   try {

@@ -117,7 +117,7 @@ inflate it. Anything longer than an hour is treated as unmeasured and simply not
 recorded; events written before timing existed carry no duration and display
 without one.
 
-The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status.
+The reader intentionally does not allow stone placement or reveal solutions. Each board is cropped to its initial stones plus a one-line margin, and successful Solved or Revisit actions open the next problem; after saving the final problem, it remains selected with its saved status. Returning to a problem already marked solved shows **Already solved** in place of the Solved button, and it cannot be recorded twice.
 
 ## Install on a phone
 

@@ -415,12 +415,16 @@ h1 {
   background: #186139;
 }
 
-/* The generic is-selected treatment is a light green fill, which would be
-   invisible against the green button, so Solved darkens instead. */
-#solved.is-selected {
-  border-color: #0c3320;
-  background: #12492f;
-  color: #ffffff;
+/* Already solved: the button is inert, but it should read as a settled state
+   rather than a broken control, so it goes orange at full opacity instead of
+   taking the faded disabled treatment below. */
+#solved.is-selected,
+#solved.is-selected:disabled {
+  border-color: #9a5a06;
+  background: #e08a1e;
+  color: #3a2405;
+  cursor: default;
+  opacity: 1;
 }
 
 .reader-controls button:hover:not(:disabled) {

@@ -138,7 +138,10 @@ recorded; events written before timing existed carry no duration and display
 without one.
 
 The reader does not allow stone placement, and each board is cropped to its
-initial stones plus a one-line margin. **Show solution** plays the recorded
+initial stones plus a one-line margin, widened out to any side of the board it
+already comes within two lines of - a crop that stops just short of an edge
+reads as an edge that is not there, and hides the very lines a capturing race is
+counted on. **Show solution** plays the recorded
 sequence onto the board as numbered stones, alternating black and white from
 move 1; the crop widens to fit them only at that point, and the solution is put
 away again as soon as you move to another problem. The 199 problems with no

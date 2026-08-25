@@ -498,6 +498,22 @@ function getCoordinatePosition(coordinate) {
   };
 }
 
+// Nothing marks the outermost line of a crop as the board's edge, so a crop
+// that stops just short of one reads as a corner that isn't there - the wall in
+// capturing races 33 looked like it stood on the first line when two more lines
+// were hidden, which changes every liberty count. A side within this many lines
+// is therefore always shown. The stones themselves sit either against an edge
+// or well away from one, so the pull-out only ever costs a line or two.
+const BOARD_EDGE_REACH = 2;
+const LAST_LINE = 18;
+
+function pullOutToEdge(low, high) {
+  return [
+    low <= BOARD_EDGE_REACH ? 0 : low,
+    LAST_LINE - high <= BOARD_EDGE_REACH ? LAST_LINE : high,
+  ];
+}
+
 // The crop widens only once the solution is on screen. Sizing it for the moves
 // from the start would tell you which way they run before you have read it out.
 function getBoardCrop(problem, showSolution = false) {
@@ -505,10 +521,14 @@ function getBoardCrop(problem, showSolution = false) {
   if (showSolution) stones.push(...solutionMoves(problem).map((move) => move.at));
   const columns = stones.map((coordinate) => getCoordinatePosition(coordinate).column);
   const rows = stones.map((coordinate) => getCoordinatePosition(coordinate).row);
-  const minColumn = Math.max(0, Math.min(...columns) - 1);
-  const maxColumn = Math.min(18, Math.max(...columns) + 1);
-  const minRow = Math.max(0, Math.min(...rows) - 1);
-  const maxRow = Math.min(18, Math.max(...rows) + 1);
+  const [minColumn, maxColumn] = pullOutToEdge(
+    Math.max(0, Math.min(...columns) - 1),
+    Math.min(LAST_LINE, Math.max(...columns) + 1),
+  );
+  const [minRow, maxRow] = pullOutToEdge(
+    Math.max(0, Math.min(...rows) - 1),
+    Math.min(LAST_LINE, Math.max(...rows) + 1),
+  );
   return {
     minColumn,
     maxColumn,

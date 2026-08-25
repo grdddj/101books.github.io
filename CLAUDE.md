@@ -153,6 +153,16 @@ Cache); there is no API token on this machine.
   that way until **Show solution** is pressed - widening the crop for the moves
   up front would tell you which way they run. The solution is put away again
   whenever the problem changes; nothing about it survives navigation.
+- **A crop that comes within `BOARD_EDGE_REACH` (2) lines of a side is pulled
+  out to it.** Nothing marks the outermost line of a crop as the board's edge,
+  so a crop stopping one line short reads as an edge that isn't there: in
+  capturing races 33 the wall on column `d` looked like it stood on the first
+  line, with columns `a` and `b` hidden, which changes every liberty count. Each
+  side is pulled out on its own, so an edge position shows its edge and a corner
+  one shows its corner. The gap distribution justifies the threshold - stones
+  sit either within two lines of a side or five-plus away - so a centre problem
+  never pays for it. Widening from the *initial* stones only leaks nothing about
+  the solution; do not key it off the moves.
 - **Solution diagrams follow the book convention, not the rules of Go.** The
   numbered moves are laid over the opening position and captures are *not*
   replayed: the point is to show the sequence, and removing stones would erase

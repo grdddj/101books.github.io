@@ -1240,10 +1240,49 @@ test("board crops include a one-line margin around the initial stones", () => {
   );
 });
 
+test("a crop that stops within two lines of a side is pulled out to it", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+  const cropFor = (problem) =>
+    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem)));
+
+  // Specialized training in capturing races, problem 33: the wall stands on
+  // column d, so the margin used to stop at column c and the group read as if
+  // it were already against the left side. Two lines were missing.
+  const capturingRace = {
+    black: ["dp", "do", "dn", "em", "fm", "dl", "eq", "fq", "gq", "fp", "gp", "hp", "fr", "fs", "gs"],
+    white: ["dq", "ep", "eo", "fo", "go", "ho", "ip", "hq", "hr", "gr", "hs", "ir"],
+  };
+  assert.deepEqual(
+    cropFor(capturingRace),
+    { minColumn: 0, maxColumn: 9, minRow: 10, maxRow: 18, columns: 10, rows: 9 },
+  );
+
+  // Every side is pulled out on its own, so a lone corner stone shows both.
+  assert.deepEqual(
+    cropFor({ black: ["cc"], white: [] }),
+    { minColumn: 0, maxColumn: 3, minRow: 0, maxRow: 3, columns: 4, rows: 4 },
+  );
+  assert.deepEqual(
+    cropFor({ black: ["qq"], white: [] }),
+    { minColumn: 15, maxColumn: 18, minRow: 15, maxRow: 18, columns: 4, rows: 4 },
+  );
+});
+
+test("a crop far from every side keeps its one-line margin", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+
+  // Three lines of gap is a position that genuinely floats, and widening it
+  // there would cost board size on every centre problem for nothing.
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop({ black: ["ee"], white: [] }))),
+    { minColumn: 3, maxColumn: 5, minRow: 3, maxRow: 5, columns: 3, rows: 3 },
+  );
+});
+
 test("board stones use grid positions relative to the crop", () => {
   const { context, elements } = loadApp({ savedName: "Ada" });
 
-  context.readerTestApi.renderBoard({ black: ["dq"], white: [] });
+  context.readerTestApi.renderBoard({ black: ["jj"], white: [] });
 
   const board = elements.get("#board");
   const blackStone = board.appended.find((stone) => stone.className === "stone black");
@@ -1288,17 +1327,19 @@ test("board creates one explicit grid line for every crop row and column", () =>
 
 test("the solution crop widens only once the solution is on screen", () => {
   const { context } = loadApp({ savedName: "Ada" });
+  // Away from every side, so the crop is the margin alone and the widening is
+  // the only thing this measures.
   const problem = {
-    black: ["dd"],
+    black: ["jj"],
     white: [],
-    solution: [{ color: "black", at: "dq" }],
+    solution: [{ color: "black", at: "jn" }],
   };
   const crop = (showSolution) =>
     JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem, showSolution)));
 
   // Sizing the board for the moves up front would say which way they run.
   assert.equal(crop(false).rows, 3);
-  assert.equal(crop(true).rows, 16);
+  assert.equal(crop(true).rows, 7);
 });
 
 test("the solution numbers its moves in order and alternates the colours", () => {

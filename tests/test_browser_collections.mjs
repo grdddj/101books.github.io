@@ -53,13 +53,23 @@ function browserPage(basePath = "") {
           await new Promise((resolve) => setTimeout(resolve, 200));
           const queuedWheelBlocked = document.querySelector("#problem-ordinal").textContent === ordinalBeforeQueuedWheel;
           const panel = document.querySelector("#collection-panel");
-          const options = [...document.querySelectorAll("[data-collection-slug]")];
+          let options = [...document.querySelectorAll("[data-collection-slug]")];
           const visibleCatalog = options.map((option) => option.textContent);
           const panelOpened = !panel.hidden;
           const dispatchKey = (key, shiftKey = false) => document.dispatchEvent(
             new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, shiftKey }),
           );
           const focusEntered = document.activeElement === options[0];
+          const filters = () => [...document.querySelectorAll("#collection-filters button")];
+          const filterLabels = filters().map((button) => button.textContent);
+          filters().at(-1).click();
+          const filteredCatalog = [...document.querySelectorAll("[data-collection-slug]")].map(
+            (option) => option.textContent,
+          );
+          const filterKeptFocus = document.activeElement === filters().at(-1);
+          filters()[0].click();
+          options = [...document.querySelectorAll("[data-collection-slug]")];
+          options[0].focus();
           dispatchKey("Tab");
           const forwardTabTrapped = document.activeElement === options[1];
           dispatchKey("Tab");
@@ -95,6 +105,9 @@ function browserPage(basePath = "") {
           result.textContent = JSON.stringify({
             panelOpened,
             visibleCatalog,
+            filterLabels,
+            filteredCatalog,
+            filterKeptFocus,
             queuedWheelBlocked,
             focusEntered,
             forwardTabTrapped,
@@ -380,6 +393,11 @@ test("Chromium loads a collection URL and restores it with browser Back", { skip
         "200 Basic Go Problems · 20 kyu · tsumego · 2 problems · Solved: 1 (50%) · Revisit: 0",
         "Advanced shapes · 1 dan · life and death · 3 problems · Solved: 1 (33%) · Revisit: 1",
       ],
+      filterLabels: ["All types (2)", "life and death (1)", "tsumego (1)"],
+      filteredCatalog: [
+        "200 Basic Go Problems · 20 kyu · tsumego · 2 problems · Solved: 1 (50%) · Revisit: 0",
+      ],
+      filterKeptFocus: true,
       queuedWheelBlocked: true,
       focusEntered: true,
       forwardTabTrapped: true,

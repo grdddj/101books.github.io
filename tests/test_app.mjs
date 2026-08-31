@@ -48,6 +48,7 @@ function loadApp({
   fetchImpl,
   savedName = null,
   savedCollection = null,
+  savedCategories = null,
   savedToken = "test-session-token",
   pathname = "/",
   serviceWorkerSupported = true,
@@ -74,6 +75,7 @@ function loadApp({
       ["static-go-reader-user", savedName],
       ["static-go-reader-token", savedName === null ? null : savedToken],
       ["static-go-reader-collection", savedCollection],
+      ["static-go-reader-categories", savedCategories],
     ].filter(([, value]) => value !== null),
   );
   const location = { pathname };
@@ -753,6 +755,138 @@ test("an invalid saved collection falls back to the first API-sorted catalog ent
     ],
   );
   assert.ok(catalog.every((item) => !("problems" in item) && !("moves" in item)));
+});
+
+function collectionFetchWithThreeTypes() {
+  const fetch = createCollectionFetch();
+  fetch.catalog.push({
+    slug: "endgame",
+    title: "Endgame shapes",
+    category: "endgame",
+    level: "5 kyu",
+    problem_count: 4,
+  });
+  return fetch;
+}
+
+function collectionTitles(elements) {
+  return elements
+    .get("#collection-list")
+    .appended.map((item) => item.appended[0].appended[0].textContent.split(" \u00b7 ")[0]);
+}
+
+function filterButtons(elements) {
+  return elements.get("#collection-filters").appended;
+}
+
+test("the collection panel offers one filter per type, counted", async () => {
+  const { fetchImpl } = collectionFetchWithThreeTypes();
+  const { context, elements } = loadApp({
+    fetchImpl,
+    savedName: "Ada",
+    savedCollection: "basic",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(
+    filterButtons(elements).map((button) => button.textContent),
+    ["All types (3)", "endgame (1)", "life and death (1)", "tsumego (1)"],
+  );
+  // Nothing chosen is the whole shelf, which is what "All types" reports.
+  assert.deepEqual(
+    filterButtons(elements).map((button) => button.attributes["aria-pressed"]),
+    ["true", "false", "false", "false"],
+  );
+  assert.deepEqual(collectionTitles(elements), [
+    "Basic shapes",
+    "Advanced shapes",
+    "Endgame shapes",
+  ]);
+});
+
+test("chosen types narrow the collection list and combine", async () => {
+  const { fetchImpl } = collectionFetchWithThreeTypes();
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl,
+    savedName: "Ada",
+    savedCollection: "basic",
+  });
+
+  await context.readerTestApi.startReader();
+  filterButtons(elements)[3].click();
+
+  assert.deepEqual(collectionTitles(elements), ["Basic shapes"]);
+  assert.equal(localStorage.get("static-go-reader-categories"), "tsumego");
+
+  filterButtons(elements)[1].click();
+
+  assert.deepEqual(collectionTitles(elements), ["Basic shapes", "Endgame shapes"]);
+  assert.deepEqual(
+    filterButtons(elements).map((button) => button.attributes["aria-pressed"]),
+    ["false", "true", "false", "true"],
+  );
+
+  filterButtons(elements)[3].click();
+
+  assert.deepEqual(collectionTitles(elements), ["Endgame shapes"]);
+});
+
+test("All types clears every chosen type in one press", async () => {
+  const { fetchImpl } = collectionFetchWithThreeTypes();
+  const { context, elements, localStorage } = loadApp({
+    fetchImpl,
+    savedName: "Ada",
+    savedCollection: "basic",
+    savedCategories: "endgame,tsumego",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(collectionTitles(elements), ["Basic shapes", "Endgame shapes"]);
+
+  filterButtons(elements)[0].click();
+
+  assert.deepEqual(collectionTitles(elements), [
+    "Basic shapes",
+    "Advanced shapes",
+    "Endgame shapes",
+  ]);
+  assert.equal(localStorage.get("static-go-reader-categories"), "");
+});
+
+test("a stored type the catalog no longer offers is dropped", async () => {
+  const { fetchImpl } = createCollectionFetch();
+  const { context, elements } = loadApp({
+    fetchImpl,
+    savedName: "Ada",
+    savedCollection: "basic",
+    savedCategories: "joseki",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.deepEqual(collectionTitles(elements), ["Basic shapes", "Advanced shapes"]);
+  assert.equal(filterButtons(elements)[0].attributes["aria-pressed"], "true");
+});
+
+test("pressing a filter keeps focus on it and reaches the panel focus trap", async () => {
+  const { fetchImpl } = collectionFetchWithThreeTypes();
+  const { context, elements, documentState } = loadApp({
+    fetchImpl,
+    savedName: "Ada",
+    savedCollection: "basic",
+  });
+
+  await context.readerTestApi.startReader();
+  context.readerTestApi.openCollectionPanel();
+  filterButtons(elements)[3].click();
+
+  assert.equal(documentState.activeElement.attributes["data-collection-category"], "tsumego");
+
+  context.readerTestApi.handleKeydown({ key: "Tab", preventDefault() {} });
+
+  assert.notEqual(documentState.activeElement, null);
 });
 
 test("the collection list shows progress states and solved percentages", async () => {

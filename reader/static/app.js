@@ -24,6 +24,7 @@ const changeCollectionButton = document.querySelector("#change-collection");
 const collectionPanel = document.querySelector("#collection-panel");
 const closeCollectionPanelButton = document.querySelector("#close-collection-panel");
 const collectionList = document.querySelector("#collection-list");
+const collectionFilters = document.querySelector("#collection-filters");
 const activityButton = document.querySelector("#show-activity");
 const activityPanel = document.querySelector("#activity-panel");
 const closeActivityPanelButton = document.querySelector("#close-activity-panel");
@@ -45,6 +46,7 @@ let isSaving = false;
 let isLoadingCollection = false;
 let isLoadingActivity = false;
 let collectionButtons = [];
+let categoryButtons = [];
 let collectionPanelInvoker;
 let activityPanelInvoker;
 let displayedPathname;
@@ -62,12 +64,17 @@ let sessionToken;
 let offerCreateFor;
 
 const COLLECTION_STORAGE_KEY = "static-go-reader-collection";
+const CATEGORY_STORAGE_KEY = "static-go-reader-categories";
 const USER_STORAGE_KEY = "static-go-reader-user";
 const TOKEN_STORAGE_KEY = "static-go-reader-token";
 const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
 const MAX_PROBLEM_DURATION_SECONDS = 3600;
+
+// An empty selection means every type rather than none: the panel opens showing
+// the whole shelf, and clearing the filter has to get back to exactly that.
+let selectedCategories = new Set(readStoredCategories());
 
 async function fetchJson(path, options = {}) {
   let response;
@@ -458,9 +465,67 @@ function getCatalogStatusTotals(slug) {
   );
 }
 
+function readStoredCategories() {
+  const stored = localStorage.getItem(CATEGORY_STORAGE_KEY);
+  return stored ? stored.split(",").filter(Boolean) : [];
+}
+
+function filteredCatalog() {
+  if (selectedCategories.size === 0) return catalog;
+  return catalog.filter((item) => selectedCategories.has(item.category));
+}
+
+function renderCollectionFilters() {
+  if (!collectionFilters || catalog.length === 0) return;
+  const categories = [...new Set(catalog.map((item) => item.category))].sort();
+  // A stored type the catalog no longer offers would hide collections with no
+  // pressed button on screen to explain why.
+  selectedCategories = new Set(
+    [...selectedCategories].filter((category) => categories.includes(category)),
+  );
+  categoryButtons = [
+    createCategoryButton(undefined, "All types", catalog.length),
+    ...categories.map((category) =>
+      createCategoryButton(
+        category,
+        category,
+        catalog.filter((item) => item.category === category).length,
+      ),
+    ),
+  ];
+  collectionFilters.replaceChildren(...categoryButtons.map(({ button }) => button));
+}
+
+function createCategoryButton(category, label, count) {
+  const isPressed =
+    category === undefined ? selectedCategories.size === 0 : selectedCategories.has(category);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = ["collection-filter", isPressed ? "is-active" : ""].filter(Boolean).join(" ");
+  button.textContent = `${label} (${count})`;
+  button.setAttribute("aria-pressed", String(isPressed));
+  if (category !== undefined) button.setAttribute("data-collection-category", category);
+  button.addEventListener("click", () => toggleCategoryFilter(category));
+  return { category, button };
+}
+
+// "All types" clears the selection rather than adding a fourth filter, so the
+// way back to the full shelf is one press however many types are on.
+function toggleCategoryFilter(category) {
+  if (category === undefined) selectedCategories.clear();
+  else if (selectedCategories.has(category)) selectedCategories.delete(category);
+  else selectedCategories.add(category);
+  localStorage.setItem(CATEGORY_STORAGE_KEY, [...selectedCategories].join(","));
+  renderCollectionList();
+  // Rendering replaced the button that was just pressed, and losing focus to
+  // the document would drop a keyboard user out of the dialog.
+  categoryButtons.find((entry) => entry.category === category)?.button.focus();
+}
+
 function renderCollectionList() {
   if (!collectionList) return;
-  collectionButtons = catalog.map((item) => {
+  renderCollectionFilters();
+  collectionButtons = filteredCatalog().map((item) => {
     const totals = getCatalogStatusTotals(item.slug);
     const solvedPercentage = (totals.solved / item.problem_count) * 100;
     const isComplete = totals.solved === item.problem_count;
@@ -871,6 +936,9 @@ function setCollectionControlsDisabled(disabled) {
   for (const { option } of collectionButtons) {
     option.disabled = disabled;
   }
+  for (const { button } of categoryButtons) {
+    button.disabled = disabled;
+  }
 }
 
 function showError(error) {
@@ -937,6 +1005,7 @@ function trapProfilePanelFocus(event) {
 function getCollectionPanelFocusables() {
   return [
     closeCollectionPanelButton,
+    ...categoryButtons.map(({ button }) => button),
     ...collectionButtons.map(({ option }) => option),
   ].filter((button) => button && !button.disabled);
 }

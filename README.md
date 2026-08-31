@@ -31,7 +31,9 @@ any position can be shared or reloaded. A booklet URL without a number opens the
 first unsolved or flagged problem and is rewritten to that one. Progress belongs to a password-protected profile. The reader asks for a name and
 password through its own dialog and shows the name in the header; selecting it
 reopens the dialog to switch profile or sign out. Use **Change collection** to browse the API-sorted booklet
-catalog and switch collections. Use **Activity** to review the current profile's
+catalog and switch collections; the buttons above the list filter it by type
+(tsumego, tesuji, endgame), several types can be on at once, **All types** clears
+them again, and the choice is remembered in the browser. Use **Activity** to review the current profile's
 recent solved and revisit actions with local timestamps and booklet/problem labels;
 the view is read-only and never exposes moves or solutions. Progress is stored
 in one JSON document per display name below `reader-data/users/`; this directory

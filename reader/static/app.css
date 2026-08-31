@@ -241,6 +241,28 @@ h1 {
   font-size: 1.1rem;
 }
 
+.collection-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem 0;
+}
+
+/* Only the type names are lower-case in the data; "All types" is written. */
+.collection-filter[data-collection-category] {
+  text-transform: capitalize;
+}
+
+.collection-panel .collection-filter.is-active {
+  border-color: #7a5a1c;
+  background: #f3bf73;
+  font-weight: 700;
+}
+
+.collection-panel .collection-filter.is-active:hover:not(:disabled) {
+  background: #e9b060;
+}
+
 .collection-list {
   display: grid;
   gap: 0.6rem;

@@ -95,7 +95,7 @@ class AuthStoreTests(unittest.TestCase):
 
     def test_a_short_password_is_refused_when_creating_a_profile(self) -> None:
         with self.assertRaises(AuthError) as error:
-            self.store.log_in("ada", "short", create=True, has_progress=False)
+            self.store.log_in("ada", "no", create=True, has_progress=False)
 
         self.assertEqual(error.exception.status, 400)
         self.assertFalse(self.store.has_credential("ada"))
@@ -106,7 +106,7 @@ class AuthStoreTests(unittest.TestCase):
         self.store.write_credential("ada", PASSWORD)
 
         with self.assertRaises(AuthError) as error:
-            self.store.log_in("ada", "short", create=False, has_progress=False)
+            self.store.log_in("ada", "no", create=False, has_progress=False)
 
         self.assertEqual(error.exception.status, 401)
 

@@ -685,7 +685,7 @@ class HttpApiTests(unittest.TestCase):
         self.assertIn("error", response)
 
     def test_a_weak_password_cannot_create_a_profile(self) -> None:
-        status, _ = self.session(user="Grace", password="short", create=True)
+        status, _ = self.session(user="Grace", password="no", create=True)
 
         self.assertEqual(status, 400)
 

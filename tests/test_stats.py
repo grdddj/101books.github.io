@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reader.stats import build_report, read_marks, render
+from reader.stats import build_profile_report, build_report, read_marks, render, render_profile
 
 
 def _stamp(day: int, hour: int = 12, minute: int = 0) -> str:
@@ -274,6 +274,117 @@ class SessionTests(StatsTestCase):
         )
 
         self.assertEqual(self.report().sign_ins, {})
+
+
+class AllTimeWindowTests(StatsTestCase):
+    def test_days_zero_starts_at_the_first_day_with_data_rather_than_at_today(self) -> None:
+        self.write_profile(
+            "ada",
+            [{"problem_id": "book-a:1/1@1", "status": "solved", "timestamp": _stamp(2)}],
+        )
+
+        report = self.report(days=0)
+
+        self.assertEqual(str(report.start), "2026-09-02")
+        self.assertEqual(str(report.end), "2026-09-10")
+
+    def test_an_empty_data_directory_still_yields_a_single_day_window(self) -> None:
+        report = self.report(days=0)
+
+        self.assertEqual(report.start, report.end)
+
+
+class ProfileReportTests(StatsTestCase):
+    def solving(self, day: int, hour: int, minute: int, number: int, duration: int = 60):
+        return {
+            "problem_id": f"book-a:1/{number}@1",
+            "status": "solved",
+            "timestamp": _stamp(day, hour, minute),
+            "duration_seconds": duration,
+        }
+
+    def profile_report(self, user: str = "ada", days: int = 7):
+        return build_profile_report(self.root, user, days=days, zone=timezone.utc, now=self.now)
+
+    def test_an_unknown_name_is_reported_rather_than_rendered_as_an_empty_page(self) -> None:
+        self.write_profile("ada", [self.solving(9, 12, 0, 1)])
+
+        self.assertIsNone(self.profile_report("nobody"))
+
+    def test_a_name_typed_in_the_wrong_case_still_finds_the_profile(self) -> None:
+        self.write_profile("Magic", [self.solving(9, 12, 0, 1)])
+
+        report = self.profile_report("magic")
+
+        self.assertIsNotNone(report)
+        self.assertEqual(report.user, "Magic")
+
+    def test_a_refused_sign_in_in_another_case_does_not_make_the_real_name_ambiguous(
+        self,
+    ) -> None:
+        self.write_profile("Magic", [self.solving(9, 12, 0, 1)])
+        self.write_metrics(
+            "2026-09-09",
+            [
+                {
+                    "timestamp": _stamp(9),
+                    "event": "session.rejected",
+                    "user": "magic",
+                    "ip": "203.0.113.4",
+                }
+            ],
+        )
+
+        report = self.profile_report("MAGIC")
+
+        self.assertIsNotNone(report)
+        self.assertEqual(report.user, "Magic")
+
+    def test_marks_close_together_are_one_sitting_and_a_long_gap_starts_another(self) -> None:
+        self.write_profile(
+            "ada",
+            [
+                self.solving(9, 12, 0, 1),
+                self.solving(9, 12, 20, 2),
+                self.solving(9, 18, 0, 3),
+            ],
+        )
+
+        report = self.profile_report()
+
+        self.assertEqual([sitting.count for sitting in report.sittings], [2, 1])
+        self.assertEqual(report.sittings[0].seconds, 120)
+
+    def test_the_window_hides_older_marks_but_the_lifetime_line_keeps_them(self) -> None:
+        self.write_profile("ada", [self.solving(2, 12, 0, 1), self.solving(9, 12, 0, 2)])
+
+        report = self.profile_report(days=7)
+
+        self.assertEqual(len(report.marks), 1)
+        self.assertEqual(report.lifetime.solved, 2)
+
+    def test_the_fastest_and_slowest_marks_ignore_the_untimed_ones(self) -> None:
+        self.write_profile(
+            "ada",
+            [
+                {"problem_id": "book-a:1/9@1", "status": "solved", "timestamp": _stamp(9, 9, 0)},
+                self.solving(9, 12, 0, 1, duration=30),
+                self.solving(9, 12, 1, 2, duration=200),
+            ],
+        )
+
+        report = self.profile_report()
+
+        self.assertEqual((report.fastest, report.slowest), (30, 200))
+
+    def test_the_rendered_page_names_the_profile_its_marks_and_its_sittings(self) -> None:
+        self.write_profile("ada", [self.solving(9, 12, 0, 7)])
+
+        text = render_profile(self.profile_report())
+
+        self.assertIn("ada", text)
+        self.assertIn("book-a:1/7@1", text)
+        self.assertIn("sittings", text)
 
 
 class RenderTests(StatsTestCase):

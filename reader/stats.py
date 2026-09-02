@@ -19,6 +19,11 @@ from typing import Any
 
 SIGN_IN_EVENTS = frozenset({"session.login", "session.created"})
 BAR_WIDTH = 32
+# Marks further apart than this belong to two visits rather than one. Half an
+# hour is well past the slowest problem anybody has spent time on (2m) and well
+# short of the gap between a lunch break and an evening.
+SITTING_GAP = timedelta(minutes=30)
+LISTED_MARKS = 20
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,38 @@ class ProfileLifetime:
 
 
 @dataclass(frozen=True)
+class Sitting:
+    """A run of marks with no long pause in it - one visit to the reader."""
+
+    start: datetime
+    end: datetime
+    count: int
+    seconds: int
+
+
+@dataclass(frozen=True)
+class ProfileReport:
+    user: str
+    start: date
+    end: date
+    zone: tzinfo | None
+    zone_label: str
+    marks: list["Mark"]
+    solved: int
+    revisit: int
+    seconds: int
+    median_seconds: int | None
+    fastest: int | None
+    slowest: int | None
+    days: list["DayCount"]
+    collections: list[tuple[str, int]]
+    sittings: list[Sitting]
+    lifetime: ProfileLifetime | None
+    sign_ins: int
+    rejections: list[tuple[str, int, str]]
+
+
+@dataclass(frozen=True)
 class DayCount:
     day: date
     count: int
@@ -88,18 +125,10 @@ def build_report(
     zone: tzinfo | None = None,
     now: datetime | None = None,
 ) -> Report:
-    now = (now or datetime.now(timezone.utc)).astimezone(zone)
-    end = now.date()
-    start = end - timedelta(days=max(days, 1) - 1)
-
     marks = read_marks(data_directory)
-    in_window = [mark for mark in marks if start <= mark.moment.astimezone(zone).date() <= end]
-    events = [
-        entry
-        for entry in read_events(data_directory)
-        if (moment := _parse(entry.get("timestamp")))
-        and start <= moment.astimezone(zone).date() <= end
-    ]
+    start, end = _window(days, zone, now, marks)
+    in_window = _within(marks, start, end, zone)
+    events = _events_within(read_events(data_directory), start, end, zone)
 
     return Report(
         start=start,
@@ -127,6 +156,123 @@ def build_report(
             }
         ),
         rejections=_rejections(events),
+    )
+
+
+def build_profile_report(
+    data_directory: Path,
+    user: str,
+    days: int = 7,
+    zone: tzinfo | None = None,
+    now: datetime | None = None,
+) -> ProfileReport | None:
+    """Everything known about one profile, or None when no such profile exists."""
+    marks = read_marks(data_directory)
+    events = read_events(data_directory)
+    name = _resolve_user(user, marks, events)
+    if name is None:
+        return None
+
+    owned = [mark for mark in marks if mark.user == name]
+    start, end = _window(days, zone, now, owned)
+    in_window = _within(owned, start, end, zone)
+    their_events = _events_within(
+        [entry for entry in events if entry.get("user") == name], start, end, zone
+    )
+    durations = [mark.duration_seconds for mark in in_window if mark.duration_seconds is not None]
+    reference = (now or datetime.now(timezone.utc)).astimezone(zone)
+
+    return ProfileReport(
+        user=name,
+        start=start,
+        end=end,
+        zone=zone,
+        zone_label=reference.tzname() or "local",
+        marks=in_window,
+        solved=sum(1 for mark in in_window if mark.status == "solved"),
+        revisit=sum(1 for mark in in_window if mark.status == "revisit"),
+        seconds=sum(durations),
+        median_seconds=_median(durations),
+        fastest=min(durations, default=None),
+        slowest=max(durations, default=None),
+        days=_days(in_window, start, end, zone),
+        collections=Counter(mark.collection for mark in in_window).most_common(),
+        sittings=_sittings(in_window),
+        lifetime=_lifetime(owned)[0] if owned else None,
+        sign_ins=sum(1 for entry in their_events if entry.get("event") in SIGN_IN_EVENTS),
+        rejections=_rejections(their_events),
+    )
+
+
+def profile_names(data_directory: Path) -> list[str]:
+    marks = read_marks(data_directory)
+    return sorted({mark.user for mark in marks})
+
+
+def _resolve_user(user: str, marks: list[Mark], events: list[dict[str, Any]]) -> str | None:
+    """The stored spelling of `user`, matched case-insensitively as a fallback.
+
+    Profile names are case-sensitive everywhere else, but a name typed at a
+    shell prompt to read a report is not authenticating anybody.
+    """
+    owners = {mark.user for mark in marks}
+    seen = owners | {str(entry["user"]) for entry in events if isinstance(entry.get("user"), str)}
+    if user in seen:
+        return user
+    # Owners first: a refused sign-in for "magic" puts that spelling in the
+    # event log, and it must not make the real "Magic" ambiguous.
+    for names in (owners, seen):
+        matches = sorted(name for name in names if name.lower() == user.lower())
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _window(
+    days: int, zone: tzinfo | None, now: datetime | None, marks: list[Mark]
+) -> tuple[date, date]:
+    """The reported range, ending today. `days` of 0 or less means all of it."""
+    end = (now or datetime.now(timezone.utc)).astimezone(zone).date()
+    if days > 0:
+        return end - timedelta(days=days - 1), end
+    earliest = min((mark.moment.astimezone(zone).date() for mark in marks), default=end)
+    return min(earliest, end), end
+
+
+def _within(marks: list[Mark], start: date, end: date, zone: tzinfo | None) -> list[Mark]:
+    return [mark for mark in marks if start <= mark.moment.astimezone(zone).date() <= end]
+
+
+def _events_within(
+    events: list[dict[str, Any]], start: date, end: date, zone: tzinfo | None
+) -> list[dict[str, Any]]:
+    return [
+        entry
+        for entry in events
+        if (moment := _parse(entry.get("timestamp")))
+        and start <= moment.astimezone(zone).date() <= end
+    ]
+
+
+def _sittings(marks: list[Mark]) -> list[Sitting]:
+    sittings: list[Sitting] = []
+    group: list[Mark] = []
+    for mark in marks:
+        if group and mark.moment - group[-1].moment > SITTING_GAP:
+            sittings.append(_sitting(group))
+            group = []
+        group.append(mark)
+    if group:
+        sittings.append(_sitting(group))
+    return sittings
+
+
+def _sitting(group: list[Mark]) -> Sitting:
+    return Sitting(
+        start=group[0].moment,
+        end=group[-1].moment,
+        count=len(group),
+        seconds=sum(mark.duration_seconds or 0 for mark in group),
     )
 
 
@@ -314,6 +460,86 @@ def render(report: Report) -> str:
     return "\n".join(lines)
 
 
+def render_profile(report: ProfileReport) -> str:
+    marked = report.solved + report.revisit
+    lines = [
+        f"Profile {report.user} - {report.start} to {report.end} ({report.zone_label})",
+        "",
+    ]
+    if not marked:
+        lines.append("  Nothing marked in this window.")
+    else:
+        active = sum(1 for day in report.days if day.count)
+        lines.append(
+            f"  {report.solved} solved, {report.revisit} revisit, "
+            f"{format_duration(report.seconds)} recorded over "
+            f"{_plural(active, 'day')} in {_plural(len(report.sittings), 'sitting')}"
+        )
+        lines.append(
+            f"  median {format_duration(report.median_seconds)}, "
+            f"fastest {format_duration(report.fastest)}, "
+            f"slowest {format_duration(report.slowest)}, "
+            f"{_plural(len(report.collections), 'collection')}"
+        )
+        lines.extend(_render_sittings(report))
+        lines.extend(_render_days(report, name_users=False))
+        lines.extend(_render_collections(report))
+        lines.extend(_render_marks(report))
+
+    lines.extend(_render_profile_sessions(report))
+    if report.lifetime:
+        lifetime = report.lifetime
+        summary = (
+            f"  {lifetime.solved} solved, {lifetime.revisit} revisit, "
+            f"{_plural(lifetime.collections, 'collection')}, "
+            f"{lifetime.first_seen.astimezone(report.zone):%Y-%m-%d %H:%M} to "
+            f"{lifetime.last_seen.astimezone(report.zone):%Y-%m-%d %H:%M}"
+        )
+        lines.extend(["", "all time", summary])
+    return "\n".join(lines)
+
+
+def _render_sittings(report: ProfileReport) -> list[str]:
+    lines = ["", "sittings"]
+    for sitting in report.sittings:
+        start = sitting.start.astimezone(report.zone)
+        end = sitting.end.astimezone(report.zone)
+        lines.append(
+            f"  {start:%Y-%m-%d}  {start:%H:%M}-{end:%H:%M}{sitting.count:>5}"
+            f"{format_duration(sitting.seconds):>9}"
+        )
+    return lines
+
+
+def _render_marks(report: ProfileReport) -> list[str]:
+    listed = report.marks[-LISTED_MARKS:]
+    heading = "marks" if len(listed) == len(report.marks) else f"marks (last {len(listed)})"
+    lines = ["", heading]
+    for mark in listed:
+        duration = (
+            format_duration(mark.duration_seconds)
+            if mark.duration_seconds is not None
+            else "untimed"
+        )
+        lines.append(
+            f"  {mark.moment.astimezone(report.zone):%m-%d %H:%M}  "
+            f"{mark.status:<8}{duration:>8}  {mark.problem_id}"
+        )
+    return lines
+
+
+def _render_profile_sessions(report: ProfileReport) -> list[str]:
+    lines = ["", "sessions"]
+    lines.append(f"  sign-ins{report.sign_ins:>6}")
+    refused = sum(count for _, count, _ in report.rejections)
+    if refused:
+        lines.append(f"  refused{refused:>7}")
+        width = max(len(address) for address, _, _ in report.rejections)
+        for address, count, detail in report.rejections:
+            lines.append(f"           {address:<{width}}{count:>5}  {detail}")
+    return lines
+
+
 def _render_profiles(report: Report) -> list[str]:
     header = (
         f"{'profile':<16}{'solved':>7}{'revisit':>8}{'time':>9}{'days':>6}{'median':>8}  last mark"
@@ -331,11 +557,15 @@ def _render_profiles(report: Report) -> list[str]:
     return lines
 
 
-def _render_days(report: Report) -> list[str]:
+def _render_days(report: "Report | ProfileReport", name_users: bool = True) -> list[str]:
     lines = ["", "by day"]
     busiest = max((day.count for day in report.days), default=0)
     for day in report.days:
-        who = ", ".join(f"{user} {count}" for user, count in day.by_user.most_common(3))
+        who = (
+            ", ".join(f"{user} {count}" for user, count in day.by_user.most_common(3))
+            if name_users
+            else ""
+        )
         bar = _bar(day.count, busiest)
         lines.append(
             f"  {day.day.strftime('%a %m-%d')}{day.count:>5}  {bar:<{BAR_WIDTH}}  {who}".rstrip()

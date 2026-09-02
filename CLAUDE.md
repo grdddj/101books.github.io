@@ -243,11 +243,16 @@ turn into a failed request.
   is the one exception, and exists solely so sign-out is observable.
 - Read it with `uv run python -m reader.admin metrics [--days N]`.
 
-`reader/stats.py` (`reader.admin stats`, or `./tools/reader-stats.sh [days]`)
-answers the usage question on top of both stores: the event log alone cannot,
+`reader/stats.py` (`reader.admin stats [--days N] [--profile NAME]`, or
+`./tools/reader-stats.sh [days] [flags]`) answers the usage question on top of
+both stores: the event log alone cannot,
 because progress predating it lives only in `users/*.json`, and that file alone
 knows nothing about sign-ins. It is read-only and buckets days in the local zone
 (`--utc` to override), so an evening session is not split across two days.
+`--profile` resolves a name case-insensitively, but **owners of marks win over
+names seen only in the event log**: a refused sign-in for `magic` is in there
+next to the real `Magic`, and matching over both sets at once made the real
+profile ambiguous.
 
 ## Progress data
 

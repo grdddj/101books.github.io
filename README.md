@@ -145,6 +145,18 @@ time recorded, days active, median time per problem, last mark), a per-day bar
 chart naming who was solving, the collections worked on, a time-of-day
 histogram, sign-ins and refused sign-ins, and an all-time line per profile.
 
+`--days 0` covers everything on disk rather than a fixed window, and `--profile`
+narrows the report to one person - their sittings (runs of marks less than half
+an hour apart), the problems they marked with the time each took, and their
+sign-ins:
+
+```bash
+./tools/reader-stats.sh 0 --profile newdeal
+```
+
+The name is matched case-insensitively here, since reading a report is not
+signing in; an unknown one lists the profiles that do exist and exits 1.
+
 It reads two sources because neither covers the other: `reader-data/users/*.json`
 holds every problem ever marked with its duration and reaches back before the
 event log existed, while `reader-data/metrics/*.jsonl` is the only record of

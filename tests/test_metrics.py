@@ -1,9 +1,14 @@
 import json
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from reader.metrics import EventLog
+
+
+def _offset(timestamp: str) -> timedelta | None:
+    return datetime.fromisoformat(timestamp).utcoffset()
 
 
 class EventLogTests(unittest.TestCase):
@@ -21,7 +26,7 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual(entry["event"], "session.login")
         self.assertEqual(entry["user"], "ada")
         self.assertEqual(entry["ip"], "203.0.113.4")
-        self.assertTrue(entry["timestamp"].endswith("Z"))
+        self.assertEqual(_offset(entry["timestamp"]), timedelta(hours=2))
 
     def test_absent_fields_are_omitted_rather_than_stored_as_null(self) -> None:
         self.log.record("session.logout", user=None, ip="203.0.113.4")
@@ -40,6 +45,17 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         for line in lines:
             self.assertIsInstance(json.loads(line), dict)
+
+    def test_an_evening_event_files_under_the_prague_day_not_the_utc_one(self) -> None:
+        # 22:30 UTC is 00:30 in Prague; the file has to follow the wall clock of
+        # the person reading it, or an evening lands in two files.
+        self.log._now = lambda: "2026-07-02T00:30:00.000000+02:00"  # type: ignore[method-assign]
+
+        self.log.record("progress.set", user="ada")
+
+        self.assertEqual(
+            [path.name for path in self.log.directory.glob("*.jsonl")], ["2026-07-02.jsonl"]
+        )
 
     def test_the_directory_is_private_because_it_holds_addresses(self) -> None:
         self.log.record("session.login", user="ada", ip="203.0.113.4")

@@ -95,13 +95,20 @@ tail -f reader-data/logs/reader.log
 
 Failing to open the log file costs the log, never the request.
 
+Log lines and event-log entries are stamped in Prague time with the offset
+spelled out (`2026-09-02T14:19:42+0200`), because everybody using this reader is
+in Czechia and a log you have to shift by two hours in your head is a log you
+misread. The offset is kept rather than dropped so the hour that happens twice
+when summer time ends is still unambiguous.
+
 ## Event log
 
 Every action the server sees is appended to `reader-data/metrics/<date>.jsonl`,
 one JSON object per line: sign-ins, sign-outs, rejected sign-ins *with the
 reason*, unauthenticated requests, problems marked (with how long they took) and
 activity views. Files are per day, so pruning is deleting whole files; nothing is
-removed automatically.
+removed automatically. Both `<date>` and the timestamps inside are Prague time,
+so an evening of solving is one file rather than two.
 
 Passwords and tokens are never written, and a failure to record is swallowed -
 losing a metric is always preferable to failing somebody's request.

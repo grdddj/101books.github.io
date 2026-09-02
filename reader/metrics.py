@@ -4,6 +4,10 @@ Every entry is one JSON object on its own line, in a file per day. A line is
 either complete or absent, so a crash mid-write costs at most the last event,
 and pruning is a matter of deleting whole files.
 
+Timestamps - and therefore the day each file covers - are Prague time, because
+this log is read by a person: an evening of solving belongs to that evening's
+file rather than being split across two UTC days at 02:00.
+
 Recording is best effort by design: a failure here must never turn into a failed
 request for the person using the reader.
 """
@@ -12,9 +16,10 @@ import json
 import os
 import threading
 from _thread import LockType
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from reader.clock import stamp
 
 
 class EventLog:
@@ -55,4 +60,4 @@ class EventLog:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        return stamp()

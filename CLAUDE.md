@@ -227,6 +227,15 @@ the log, never the request.
 is best effort and must stay that way: it is wrapped so an `OSError` can never
 turn into a failed request.
 
+- **Timestamps are Prague time, not UTC**, here and in `reader/logs.py`, via
+  `reader/clock.py`; the offset is always written out so the repeated autumn
+  hour stays unambiguous. The daily file name follows the Prague day. Files
+  written before this change carry `Z` and everything that reads them handles
+  both - `datetime.fromisoformat` parses either, so never compare these strings
+  lexicographically to order events across the change.
+  `reader-data/users/*.json` deliberately stayed UTC: that format is validated
+  on the way in by `ProgressStore._is_utc_timestamp` and never shown raw, so
+  moving it would be a migration of every stored event for nothing visible.
 - **Never log passwords or tokens.** A test asserts neither appears in the file.
 - Addresses come from `CF-Connecting-IP`; the socket peer is always Cloudflare.
 - Client-only actions (navigation, dialog opens, problem views) are **not**

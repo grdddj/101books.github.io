@@ -114,6 +114,30 @@ class WindowTests(StatsTestCase):
         self.assertEqual(len(report.days), 7)
         self.assertEqual([day.count for day in report.days], [0, 0, 0, 0, 0, 0, 1])
 
+    def test_offset_stamps_are_read_alongside_the_older_utc_ones(self) -> None:
+        # The event log moved to Prague time mid-history; both spellings of the
+        # same evening have to land on the same day.
+        self.write_profile(
+            "ada",
+            [
+                {
+                    "problem_id": "book-a:1/1@1",
+                    "status": "solved",
+                    "timestamp": "2026-09-09T12:00:00.000000Z",
+                },
+                {
+                    "problem_id": "book-a:1/2@1",
+                    "status": "solved",
+                    "timestamp": "2026-09-09T23:30:00.000000+02:00",
+                },
+            ],
+        )
+
+        report = self.report(days=7)
+
+        self.assertEqual(report.solved, 2)
+        self.assertEqual(report.days[-2].count, 2)
+
 
 class ProfileTests(StatsTestCase):
     def test_profiles_are_ranked_by_what_they_solved(self) -> None:

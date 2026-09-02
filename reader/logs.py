@@ -12,8 +12,10 @@ log file, never the request.
 
 import logging
 import logging.handlers
-import time
+from datetime import datetime
 from pathlib import Path
+
+from reader.clock import ZONE
 
 LOG_FILE_NAME = "reader.log"
 # The access log holds visitors' addresses, so it is as sensitive as the rest of
@@ -23,8 +25,20 @@ LOG_FILE_MODE = 0o600
 MAX_LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
-# UTC, like every other timestamp the reader writes down.
-DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+# Prague time, like the event log: this file is read by a person, and the
+# offset is kept so the hour that repeats each autumn is still unambiguous.
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+
+
+class LocalTimeFormatter(logging.Formatter):
+    """Timestamps in Prague time.
+
+    `logging.Formatter.converter` cannot do this: it hands back a `struct_time`,
+    which carries no offset, so `%z` would render empty or lie about the zone.
+    """
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return datetime.fromtimestamp(record.created, ZONE).strftime(datefmt or DATE_FORMAT)
 
 
 def configure_logging(data_directory: Path, level: int = logging.INFO) -> Path | None:
@@ -36,8 +50,7 @@ def configure_logging(data_directory: Path, level: int = logging.INFO) -> Path |
     so that starting several servers in one process - which the tests do - does
     not write every line once per server.
     """
-    formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
-    formatter.converter = time.gmtime
+    formatter = LocalTimeFormatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
     root = logging.getLogger()
     root.setLevel(level)

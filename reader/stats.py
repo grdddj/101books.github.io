@@ -129,12 +129,13 @@ def build_report(
     start, end = _window(days, zone, now, marks)
     in_window = _within(marks, start, end, zone)
     events = _events_within(read_events(data_directory), start, end, zone)
+    reference = (now or datetime.now(timezone.utc)).astimezone(zone)
 
     return Report(
         start=start,
         end=end,
         zone=zone,
-        zone_label=now.tzname() or "local",
+        zone_label=reference.tzname() or "local",
         solved=sum(1 for mark in in_window if mark.status == "solved"),
         revisit=sum(1 for mark in in_window if mark.status == "revisit"),
         seconds=sum(mark.duration_seconds or 0 for mark in in_window),

@@ -114,6 +114,16 @@ class WindowTests(StatsTestCase):
         self.assertEqual(len(report.days), 7)
         self.assertEqual([day.count for day in report.days], [0, 0, 0, 0, 0, 0, 1])
 
+    def test_the_clock_defaults_to_now_the_way_the_command_line_calls_it(self) -> None:
+        # The CLI passes no `now`; every other test does, which is how a crash
+        # on the default path reached a release.
+        for zone in (timezone.utc, None):
+            with self.subTest(zone=zone):
+                report = build_report(self.root, days=7, zone=zone)
+
+                self.assertTrue(report.zone_label)
+                self.assertEqual((report.end - report.start).days, 6)
+
     def test_offset_stamps_are_read_alongside_the_older_utc_ones(self) -> None:
         # The event log moved to Prague time mid-history; both spellings of the
         # same evening have to land on the same day.

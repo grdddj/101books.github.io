@@ -136,6 +136,7 @@ function loadApp({
           if (
             selector === "#collection-panel" ||
             selector === "#activity-panel" ||
+            selector === "#stats-panel" ||
             selector === "#profile-panel" ||
             selector === "#modal-backdrop"
           ) {
@@ -177,6 +178,10 @@ globalThis.readerTestApi = {
   loadActiveCollection: typeof loadActiveCollection === "function" ? loadActiveCollection : undefined,
   navigate,
   openActivityPanel: typeof openActivityPanel === "function" ? openActivityPanel : undefined,
+  openStatsPanel: typeof openStatsPanel === "function" ? openStatsPanel : undefined,
+  closeStatsPanel: typeof closeStatsPanel === "function" ? closeStatsPanel : undefined,
+  refreshRole: typeof refreshRole === "function" ? refreshRole : undefined,
+  isAdmin: () => isAdmin,
   openCollectionPanel: typeof openCollectionPanel === "function" ? openCollectionPanel : undefined,
   queueReaderWheel: () => handleWheel({ deltaY: 100, target: reader }),
   formatDuration: typeof formatDuration === "function" ? formatDuration : undefined,
@@ -229,7 +234,10 @@ function response(body, status = 200) {
 
 // Signing in is an HTTP call now, so every fixture that starts the reader needs
 // to answer it.
-function sessionResponse(path, options = {}, { known = ["Ada", "Grace"] } = {}) {
+function sessionResponse(path, options = {}, { known = ["Ada", "Grace"], admins = [] } = {}) {
+  if (path.endsWith("/api/session") && options.method === undefined) {
+    return response({ user: known[0], admin: admins.includes(known[0]) });
+  }
   if (!path.endsWith("/api/session") || options.method !== "POST") return null;
   const payload = JSON.parse(options.body);
   if (!known.includes(payload.user) && !payload.create) {
@@ -242,6 +250,7 @@ function sessionResponse(path, options = {}, { known = ["Ada", "Grace"] } = {}) 
     user: payload.user,
     token: `token-for-${payload.user}`,
     created: !known.includes(payload.user),
+    admin: admins.includes(payload.user),
   });
 }
 
@@ -255,10 +264,10 @@ function createProblems() {
   }));
 }
 
-function createFetch({ rejectPut = false, putNetworkError = false } = {}) {
+function createFetch({ rejectPut = false, putNetworkError = false, admins = [] } = {}) {
   const problems = createProblems();
   return async (path, options = {}) => {
-    const session = sessionResponse(path, options);
+    const session = sessionResponse(path, options, { admins });
     if (session) return session;
     if (path === "/api/collections") {
       return response([
@@ -334,6 +343,7 @@ function createCollectionFetch({ problems = {} } = {}) {
     catalog,
     fetchImpl: async (path) => {
       calls.push(path);
+      if (path === "/api/session") return response({ user: "Ada", admin: false });
       if (path === "/api/collections") return response(catalog);
       if (path.startsWith("/api/collections/")) {
         return response(collections[decodeURIComponent(path.slice("/api/collections/".length))]);
@@ -362,6 +372,8 @@ test("a configured base path prefixes API calls and collection history", async (
   const calls = [];
   const fetchImpl = async (path, options = {}) => {
     calls.push([path, options.method ?? "GET"]);
+    const session = sessionResponse(path, options);
+    if (session) return session;
     if (path === "/tsumego/api/collections") {
       return response([
         {
@@ -412,6 +424,7 @@ test("a configured base path prefixes API calls and collection history", async (
   await context.readerTestApi.setCurrentStatus("solved");
 
   assert.deepEqual(calls, [
+    ["/tsumego/api/session", "GET"],
     ["/tsumego/api/collections", "GET"],
     ["/tsumego/api/collections/basic", "GET"],
     ["/tsumego/api/progress", "GET"],
@@ -528,7 +541,7 @@ test("an unknown collection URL reports an error without loading the first catal
 
   await context.readerTestApi.startReader();
 
-  assert.deepEqual(calls, ["/api/collections"]);
+  assert.deepEqual(calls, ["/api/session", "/api/collections"]);
   assert.equal(elements.get("#collection-title").textContent, "");
   assert.match(elements.get("#status-feedback").textContent, /unknown collection/i);
   assert.equal(elements.get("#change-collection").disabled, false);
@@ -592,7 +605,7 @@ test("an invalid initial path reports an error without loading the saved collect
 
     await context.readerTestApi.startReader();
 
-    assert.deepEqual(calls, ["/api/collections"], pathname);
+    assert.deepEqual(calls, ["/api/session", "/api/collections"], pathname);
     assert.equal(elements.get("#collection-title").textContent, "", pathname);
     assert.match(elements.get("#status-feedback").textContent, /invalid collection url/i, pathname);
     assert.equal(elements.get("#change-collection").disabled, false, pathname);
@@ -693,6 +706,7 @@ test("a valid saved collection is loaded after the catalog and resumes at the fi
   await context.readerTestApi.startReader();
 
   assert.deepEqual(calls, [
+    "/api/session",
     "/api/collections",
     "/api/collections/advanced",
     "/api/progress",
@@ -2278,4 +2292,191 @@ test("an unreachable server does not block signing out", async () => {
 
   assert.equal(localStorage.has("static-go-reader-token"), false);
   assert.equal(localStorage.has("static-go-reader-user"), false);
+});
+
+function statsReport(overrides = {}) {
+  return {
+    window: { start: "2026-08-27", end: "2026-09-02", days: 7, zone: "CEST" },
+    totals: { profiles: 2, solved: 12, revisit: 3, seconds: 900, duration: "15m00s" },
+    profiles: [
+      {
+        user: "Ada",
+        solved: 10,
+        revisit: 2,
+        seconds: 800,
+        duration: "13m20s",
+        active_days: 3,
+        median_seconds: 40,
+        median: "40s",
+        collections: 2,
+        last_mark: "09-02 20:10",
+      },
+    ],
+    days: [
+      { date: "2026-09-01", label: "Tue 09-01", count: 4, by_user: [{ user: "Ada", count: 4 }] },
+      { date: "2026-09-02", label: "Wed 09-02", count: 11, by_user: [{ user: "Ada", count: 11 }] },
+    ],
+    collections: [{ slug: "basic", count: 9 }],
+    hours: Array.from({ length: 24 }, (_, hour) => (hour === 20 ? 15 : 0)),
+    lifetime: [{ user: "Ada", solved: 40, revisit: 5, collections: 3, since: "2026-07-01" }],
+    ...overrides,
+  };
+}
+
+function loadAdminReader({ admins = ["Ada"], report = statsReport(), statsStatus = 200 } = {}) {
+  const inner = createFetch({ admins });
+  const calls = [];
+  const fetchImpl = async (path, options = {}) => {
+    calls.push(path);
+    if (path.includes("/api/stats")) {
+      return response(statsStatus === 200 ? report : { error: "Not permitted" }, statsStatus);
+    }
+    return inner(path, options);
+  };
+  return { calls, ...loadApp({ fetchImpl, savedName: "Ada" }) };
+}
+
+test("the usage button appears only for an admin", async () => {
+  const admin = loadAdminReader();
+  await admin.context.readerTestApi.startReader();
+  assert.equal(admin.elements.get("#show-stats").hidden, false);
+  assert.equal(admin.context.readerTestApi.isAdmin(), true);
+
+  const plain = loadAdminReader({ admins: [] });
+  await plain.context.readerTestApi.startReader();
+  assert.equal(plain.elements.get("#show-stats").hidden, true);
+  assert.equal(plain.context.readerTestApi.isAdmin(), false);
+});
+
+test("a session the server no longer vouches for loses the usage button", async () => {
+  // The role is the server's answer, not something the browser remembers.
+  const inner = createFetch({ admins: ["Ada"] });
+  const { context, elements } = loadApp({
+    fetchImpl: async (path, options = {}) => {
+      if (path.endsWith("/api/session") && options.method === undefined) {
+        return response({ error: "Sign in required" }, 401);
+      }
+      return inner(path, options);
+    },
+    savedName: "Ada",
+  });
+
+  await context.readerTestApi.startReader();
+
+  assert.equal(elements.get("#show-stats").hidden, true);
+});
+
+test("the usage panel reports the seven-day window and can switch to thirty", async () => {
+  const admin = loadAdminReader();
+  const { context, elements, calls, documentState } = admin;
+  await context.readerTestApi.startReader();
+
+  const statsButton = elements.get("#show-stats");
+  await context.readerTestApi.openStatsPanel({ currentTarget: statsButton });
+
+  assert.equal(elements.get("#stats-panel").hidden, false);
+  assert.equal(elements.get("#modal-backdrop").hidden, false);
+  assert.equal(statsButton.attributes["aria-expanded"], "true");
+  assert.equal(documentState.activeElement, elements.get("#close-stats-panel"));
+  assert.equal(calls.at(-1), "/api/stats?days=7");
+  assert.equal(elements.get("#stats-status").hidden, true);
+
+  const windows = elements.get("#stats-windows").appended;
+  assert.deepEqual(
+    windows.map((button) => button.textContent),
+    ["7 days", "30 days"],
+  );
+  assert.equal(windows[0].attributes["aria-pressed"], "true");
+
+  windows[1].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.at(-1), "/api/stats?days=30");
+});
+
+test("the usage panel shows the totals, the profiles and the charts", async () => {
+  const admin = loadAdminReader();
+  const { context, elements } = admin;
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.openStatsPanel({ currentTarget: elements.get("#show-stats") });
+
+  const sections = elements.get("#stats-content").appended;
+  const titles = sections.map((section) => section.appended[0].textContent);
+  assert.deepEqual(titles, [
+    "2026-08-27 to 2026-09-02 (CEST)",
+    "Profiles",
+    "By day",
+    "Collections",
+    "Time of day (CEST)",
+    "All time",
+  ]);
+  assert.equal(
+    sections[0].appended[1].textContent,
+    "2 profiles active · 15 marked (12 solved, 3 revisit) · 15m00s recorded",
+  );
+
+  const profileRows = sections[1].appended[1].appended[1].appended;
+  assert.deepEqual(
+    profileRows[0].appended.map((cell) => cell.textContent),
+    ["Ada", "10", "2", "13m20s", "3", "40s", "09-02 20:10"],
+  );
+
+  const dayRows = sections[2].appended[1].appended;
+  assert.deepEqual(
+    dayRows.map((row) => row.appended[0].textContent),
+    ["Tue 09-01", "Wed 09-02"],
+  );
+  // The bars are scaled against the busiest day, not against the window.
+  assert.equal(dayRows[1].appended[2].appended[0].style.width, "100%");
+  assert.equal(dayRows[0].appended[2].appended[0].style.width, "36%");
+  assert.equal(dayRows[1].appended[3].textContent, "Ada 11");
+
+  const hourColumns = sections[4].appended[1].appended;
+  assert.equal(hourColumns.length, 24);
+  assert.equal(hourColumns[20].appended[0].style.height, "100%");
+  assert.equal(hourColumns[19].appended[0].style.height, "0%");
+});
+
+test("an empty window still reports its dates instead of an empty panel", async () => {
+  const admin = loadAdminReader({
+    report: statsReport({
+      totals: { profiles: 0, solved: 0, revisit: 0, seconds: 0, duration: "0s" },
+      profiles: [],
+      collections: [],
+      lifetime: [],
+    }),
+  });
+  const { context, elements } = admin;
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.openStatsPanel({ currentTarget: elements.get("#show-stats") });
+
+  const sections = elements.get("#stats-content").appended;
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].appended[1].textContent, "No problems marked in this window.");
+});
+
+test("a refused usage request reports itself rather than blanking the panel", async () => {
+  const admin = loadAdminReader({ statsStatus: 403 });
+  const { context, elements } = admin;
+  await context.readerTestApi.startReader();
+
+  await context.readerTestApi.openStatsPanel({ currentTarget: elements.get("#show-stats") });
+
+  assert.equal(elements.get("#stats-status").textContent, "Usage could not be loaded.");
+  assert.equal(elements.get("#stats-status").hidden, false);
+  assert.equal(elements.get("#status-feedback").textContent, "Not permitted");
+});
+
+test("signing out closes the usage panel and takes the button with it", async () => {
+  const admin = loadAdminReader();
+  const { context, elements } = admin;
+  await context.readerTestApi.startReader();
+  await context.readerTestApi.openStatsPanel({ currentTarget: elements.get("#show-stats") });
+
+  context.readerTestApi.signOutProfile();
+
+  assert.equal(elements.get("#stats-panel").hidden, true);
+  assert.equal(elements.get("#show-stats").hidden, true);
+  assert.equal(elements.get("#modal-backdrop").hidden, true);
 });

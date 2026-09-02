@@ -76,6 +76,33 @@ uv run python -m reader.admin --data-dir reader-data list
 uv run python -m reader.admin --data-dir reader-data set-password jirka
 ```
 
+## Admins
+
+A profile can be granted one extra thing: the **Usage** button beside Activity,
+which opens the same numbers `reader-stats.sh` prints. Nobody has it by default.
+
+```bash
+uv run python -m reader.admin --data-dir reader-data grant-admin jirka
+uv run python -m reader.admin --data-dir reader-data revoke-admin jirka
+uv run python -m reader.admin --data-dir reader-data list   # marks the admins
+```
+
+Grants live in `reader-data/admins.json` and are read on every request, so they
+take effect without restarting the service. The name is matched **exactly**:
+`Magic` and `magic` are two different profiles anybody may create, so a
+case-insensitive grant would hand one person's role to whoever registers the
+other spelling. Granting a name no profile holds is allowed - it may be created
+later - but the command says so, because it is usually a typo.
+
+The panel reports the last 7 or 30 days: who was active with how much time and
+their median, a per-day bar chart naming who was solving, the collections worked
+on, a time-of-day histogram and all-time totals. It deliberately shows **no
+sessions and no addresses** - sign-ins and refused logins stay in the terminal
+report, which is read by somebody who can already read the files. The role is
+asked of the server on every load rather than remembered in the browser, so a
+revoked grant takes the button away at the next reload and a stored flag can
+never leave a button that only answers 403.
+
 ## Logs
 
 The server logs to stderr - so `journalctl -u tsumego.service` sees it - and to
@@ -170,6 +197,10 @@ bucket in UTC instead.
 TLS terminates at Cloudflare, which therefore sees passwords in transit. This is
 a tool for a handful of friends, not a secret store - do not reuse a password
 that matters.
+
+`GET /api/stats?days=<count>` returns that usage report as JSON for an admin,
+and 403 for anybody else; `GET /api/session` answers who the caller is and
+whether they hold the role. Both need a token, like every other private route.
 
 `GET /api/activity?limit=<count>` returns newest-first activity with
 collection titles, problem numbers and, where recorded, how long the problem was

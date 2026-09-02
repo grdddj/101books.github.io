@@ -64,7 +64,8 @@ h1 {
 
 .header-content > button,
 .collection-panel button,
-.activity-panel button {
+.activity-panel button,
+.stats-panel button {
   min-height: 2.4rem;
   padding: 0.4rem 0.7rem;
   border: 1px solid #7b6a59;
@@ -75,13 +76,15 @@ h1 {
 
 .header-content > button:hover:not(:disabled),
 .collection-panel button:hover:not(:disabled),
-.activity-panel button:hover:not(:disabled) {
+.activity-panel button:hover:not(:disabled),
+.stats-panel button:hover:not(:disabled) {
   background: #efe5d8;
 }
 
 .header-content > button:disabled,
 .collection-panel button:disabled,
-.activity-panel button:disabled {
+.activity-panel button:disabled,
+.stats-panel button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -226,7 +229,8 @@ h1 {
 }
 
 .collection-panel__header,
-.activity-panel__header {
+.activity-panel__header,
+.stats-panel__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -236,9 +240,196 @@ h1 {
 }
 
 .collection-panel__header h2,
-.activity-panel__header h2 {
+.activity-panel__header h2,
+.stats-panel__header h2 {
   margin: 0;
   font-size: 1.1rem;
+}
+
+/* The usage panel is a report, so it is the widest of the three: seven columns
+   of numbers do not fold well. */
+.stats-panel {
+  position: fixed;
+  z-index: 4;
+  top: 1rem;
+  right: 1rem;
+  left: 1rem;
+  width: min(100% - 2rem, 46rem);
+  max-height: calc(100vh - 2rem);
+  margin: 0 auto;
+  overflow: auto;
+  border: 1px solid #7b6a59;
+  border-radius: 0.5rem;
+  background: #f7f3ed;
+  box-shadow: 0 0.5rem 2rem rgb(62 40 17 / 32%);
+}
+
+.stats-windows {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem 0;
+}
+
+.stats-panel .stats-window.is-active {
+  border-color: #7a5a1c;
+  background: #f3bf73;
+  font-weight: 700;
+}
+
+.stats-panel .stats-window.is-active:hover:not(:disabled) {
+  background: #e9b060;
+}
+
+.stats-status {
+  padding: 1rem 1rem 0;
+  color: #5c5147;
+}
+
+.stats-content {
+  display: grid;
+  gap: 1.4rem;
+  padding: 1rem;
+}
+
+.stats-summary {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.stats-summary__window {
+  color: #5c5147;
+  font-size: 0.85rem;
+}
+
+.stats-summary__headline {
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.stats-section {
+  display: grid;
+  gap: 0.5rem;
+  /* Seven columns of numbers do not fit a phone, and a clipped table hides the
+     median and the last mark with nothing on screen to say so. */
+  overflow-x: auto;
+}
+
+.stats-section__title {
+  margin: 0;
+  color: #5c5147;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 0.32rem 0.4rem;
+  border-bottom: 1px solid #e2d9cb;
+  text-align: left;
+}
+
+.stats-table th {
+  color: #5c5147;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.stats-table .stats-number {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.stats-table tbody tr:last-child th,
+.stats-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.stats-day {
+  display: grid;
+  align-items: center;
+  gap: 0.5rem;
+  grid-template-columns: 5.2rem 2rem 1fr minmax(0, 8rem);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-day__count {
+  text-align: right;
+}
+
+.stats-day__who {
+  overflow: hidden;
+  color: #5c5147;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* On a phone the bar is worth more than the names beside it. */
+@media (width <= 32rem) {
+  .stats-day {
+    grid-template-columns: 4.6rem 1.8rem 1fr;
+  }
+
+  .stats-day__who {
+    display: none;
+  }
+}
+
+.stats-bar {
+  height: 0.6rem;
+  border-radius: 0.3rem;
+  background: #e7ded0;
+}
+
+.stats-bar__fill {
+  height: 100%;
+  border-radius: 0.3rem;
+  background: #b5813a;
+}
+
+/* The 24 columns are laid out as a strip so a quiet hour still holds its
+   place: a chart that skips empty hours cannot be read as a clock. */
+.stats-hours {
+  display: grid;
+  align-items: end;
+  height: 5.5rem;
+  gap: 2px;
+  grid-template-columns: repeat(24, 1fr);
+}
+
+.stats-hour {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.15rem;
+}
+
+.stats-hour__bar {
+  min-height: 1px;
+  border-radius: 0.15rem 0.15rem 0 0;
+  background: #b5813a;
+}
+
+.stats-hour__label {
+  color: #5c5147;
+  font-size: 0.62rem;
+  text-align: center;
+}
+
+.stats-note {
+  color: #5c5147;
+  font-size: 0.82rem;
 }
 
 .collection-filters {

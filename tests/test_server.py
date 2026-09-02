@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from typer.testing import CliRunner
 
+from reader.admins import AdminStore
 from reader.server import (
     ProgressStore,
     StorageCorruptionError,
@@ -964,6 +965,111 @@ class HttpApiTests(unittest.TestCase):
         response = self.get_json("/api/activity")
 
         self.assertEqual(len(response["events"]), 50)
+
+    def grant_admin(self, user: str) -> None:
+        AdminStore(self.root / "reader-data").grant(user)
+
+    def test_the_stats_endpoint_answers_only_an_admin(self) -> None:
+        status, response = self.request_json("/api/stats")
+        self.assertEqual(status, 403, response)
+        self.assertEqual(response["error"], "Not permitted")
+
+        # Granted against the running service: the list is read per request, so
+        # `grant-admin` must not need a restart to be believed.
+        self.grant_admin("Ada")
+
+        status, response = self.request_json("/api/stats")
+        self.assertEqual(status, 200, response)
+
+    def test_the_stats_endpoint_refuses_a_caller_with_no_session(self) -> None:
+        self.grant_admin("Ada")
+
+        status, _ = self.request_json("/api/stats", authenticated=False)
+
+        self.assertEqual(status, 401)
+
+    def test_the_stats_report_covers_the_window_it_was_asked_for(self) -> None:
+        self.grant_admin("Ada")
+        self.put_json(
+            "/api/progress",
+            {
+                "problem_id": "200-basic-go-problems:24176/174140@1",
+                "status": "solved",
+                "duration_seconds": 42,
+            },
+        )
+
+        response = self.get_json("/api/stats?days=30")
+
+        self.assertEqual(response["window"]["days"], 30)
+        self.assertEqual(len(response["days"]), 30)
+        self.assertEqual(response["totals"]["solved"], 1)
+        self.assertEqual(response["profiles"][0]["user"], "Ada")
+        self.assertEqual(response["collections"], [{"slug": "200-basic-go-problems", "count": 1}])
+        self.assertEqual(self.get_json("/api/stats")["window"]["days"], 7)
+
+    def test_the_stats_report_carries_no_sessions_and_no_addresses(self) -> None:
+        self.grant_admin("Ada")
+        self.session(user="Grace", password="a wrong password")
+
+        body = json.dumps(self.get_json("/api/stats"))
+
+        self.assertNotIn("rejected", body)
+        self.assertNotIn("sign_ins", body)
+        self.assertNotIn("127.0.0.1", body)
+
+    def test_the_stats_endpoint_rejects_invalid_windows(self) -> None:
+        self.grant_admin("Ada")
+        for path in (
+            "/api/stats?days=",
+            "/api/stats?days=nope",
+            "/api/stats?days=0",
+            "/api/stats?days=366",
+            "/api/stats?days=7&days=30",
+            "/api/stats?profile=Ada",
+        ):
+            with self.subTest(path=path):
+                status, response = self.request_json(path)
+
+                self.assertEqual(status, 400)
+                self.assertIn("error", response)
+
+    def test_viewing_the_stats_is_recorded_and_so_is_being_refused(self) -> None:
+        self.request_json("/api/stats")
+        self.grant_admin("Ada")
+        self.request_json("/api/stats?days=30")
+
+        events = [
+            (entry["event"], entry.get("user"), entry.get("days"))
+            for entry in self.recorded_events()
+            if str(entry["event"]).startswith("stats.")
+        ]
+
+        self.assertIn(("stats.refused", "Ada", None), events)
+        self.assertIn(("stats.viewed", "Ada", 30), events)
+
+    def test_the_session_endpoint_names_the_caller_and_their_role(self) -> None:
+        status, response = self.request_json("/api/session")
+        self.assertEqual(status, 200)
+        self.assertEqual(response, {"user": "Ada", "admin": False})
+
+        self.grant_admin("Ada")
+
+        self.assertEqual(self.get_json("/api/session"), {"user": "Ada", "admin": True})
+
+    def test_the_session_endpoint_refuses_a_caller_with_no_session(self) -> None:
+        status, _ = self.request_json("/api/session", authenticated=False)
+
+        self.assertEqual(status, 401)
+
+    def test_signing_in_says_whether_the_profile_is_an_admin(self) -> None:
+        self.grant_admin("Grace")
+
+        _, plain = self.session(user="Bert", password=self.TEST_PASSWORD, create=True)
+        _, granted = self.session(user="Grace", password=self.TEST_PASSWORD, create=True)
+
+        self.assertIs(plain["admin"], False)
+        self.assertIs(granted["admin"], True)
 
     def test_activity_endpoint_rejects_invalid_queries(self) -> None:
         for path in (

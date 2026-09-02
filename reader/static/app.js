@@ -30,6 +30,12 @@ const activityPanel = document.querySelector("#activity-panel");
 const closeActivityPanelButton = document.querySelector("#close-activity-panel");
 const activityList = document.querySelector("#activity-list");
 const activityEmpty = document.querySelector("#activity-empty");
+const statsButton = document.querySelector("#show-stats");
+const statsPanel = document.querySelector("#stats-panel");
+const closeStatsPanelButton = document.querySelector("#close-stats-panel");
+const statsWindows = document.querySelector("#stats-windows");
+const statsStatus = document.querySelector("#stats-status");
+const statsContent = document.querySelector("#stats-content");
 const modalBackdrop = document.querySelector("#modal-backdrop");
 const basePath = window.READER_BASE_PATH || "";
 
@@ -45,10 +51,15 @@ let lastWheelNavigation = 0;
 let isSaving = false;
 let isLoadingCollection = false;
 let isLoadingActivity = false;
+let isLoadingStats = false;
+let isAdmin = false;
+let statsDays = 7;
+let statsWindowButtons = [];
 let collectionButtons = [];
 let categoryButtons = [];
 let collectionPanelInvoker;
 let activityPanelInvoker;
+let statsPanelInvoker;
 let displayedPathname;
 let pendingHistoryPathname;
 let historyRequestId = 0;
@@ -71,6 +82,10 @@ const WHEEL_THRESHOLD = 70;
 const WHEEL_IDLE_MS = 140;
 const WHEEL_COOLDOWN_MS = 500;
 const MAX_PROBLEM_DURATION_SECONDS = 3600;
+// Two windows, because a week says what is happening now and a month says
+// whether it kept happening.
+const STATS_WINDOWS = [7, 30];
+const STATS_LISTED_COLLECTIONS = 10;
 
 // An empty selection means every type rather than none: the panel opens showing
 // the whole shelf, and clearing the filter has to get back to exactly that.
@@ -321,6 +336,7 @@ async function submitProfile(event, { create = false } = {}) {
   const previous = user;
   setCreateOffer(null);
   storeSession(attempt.body.user, attempt.body.token);
+  applyRole(attempt.body.admin);
   if (profilePasswordInput) profilePasswordInput.value = "";
   renderProfile();
   closeProfilePanel();
@@ -352,6 +368,7 @@ function signOutProfile() {
   }
   clearSession();
   user = undefined;
+  applyRole(false);
   renderProfile();
   if (profileNameInput) profileNameInput.value = "";
   if (profilePasswordInput) profilePasswordInput.value = "";
@@ -891,6 +908,21 @@ function handleKeydown(event) {
     }
     return;
   }
+  if (isStatsPanelOpen()) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeStatsPanel();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapStatsPanelFocus(event);
+      return;
+    }
+    if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+    }
+    return;
+  }
   if (isActivityPanelOpen()) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -950,6 +982,7 @@ function setControlsDisabled(disabled) {
 function setCollectionControlsDisabled(disabled) {
   if (changeCollectionButton) changeCollectionButton.disabled = disabled;
   if (activityButton) activityButton.disabled = disabled;
+  if (statsButton) statsButton.disabled = disabled;
   // The profile stays reachable even when the catalog failed to load: that is
   // exactly when a wrong name most needs correcting.
   if (profileButton) profileButton.disabled = false;
@@ -966,6 +999,7 @@ function showError(error) {
   if (error?.name === "SessionExpiredError") {
     clearSession();
     user = undefined;
+    applyRole(false);
     renderProfile();
     setControlsDisabled(true);
     openProfilePanel();
@@ -981,7 +1015,12 @@ function isActivityPanelOpen() {
 }
 
 function isDialogOpen() {
-  return isCollectionPanelOpen() || isActivityPanelOpen() || isProfilePanelOpen();
+  return (
+    isCollectionPanelOpen() ||
+    isActivityPanelOpen() ||
+    isStatsPanelOpen() ||
+    isProfilePanelOpen()
+  );
 }
 
 function showModalBackdrop() {
@@ -1060,7 +1099,17 @@ function closeCollectionPanel({ restoreFocus = true } = {}) {
 }
 
 function openCollectionPanel(event) {
-  if (isSaving || isLoadingCollection || isLoadingActivity || isActivityPanelOpen() || !collectionPanel) return;
+  if (
+    isSaving ||
+    isLoadingCollection ||
+    isLoadingActivity ||
+    isLoadingStats ||
+    isActivityPanelOpen() ||
+    isStatsPanelOpen() ||
+    !collectionPanel
+  ) {
+    return;
+  }
   window.clearTimeout(wheelTimer);
   wheelTimer = undefined;
   wheelDelta = 0;
@@ -1148,7 +1197,9 @@ async function openActivityPanel(event) {
     isSaving ||
     isLoadingCollection ||
     isLoadingActivity ||
+    isLoadingStats ||
     isCollectionPanelOpen() ||
+    isStatsPanelOpen() ||
     !activityPanel
   ) {
     return;
@@ -1177,6 +1228,325 @@ async function openActivityPanel(event) {
     isLoadingActivity = false;
     if (activityButton) activityButton.disabled = isSaving || isLoadingCollection;
   }
+}
+
+// -- usage panel (admins only) --------------------------------------------
+
+// The role belongs to the session, not to the browser: remembering it locally
+// would either hide the panel from somebody just granted it, or leave a button
+// that answers nothing but 403.
+function applyRole(admin) {
+  isAdmin = Boolean(admin);
+  if (!statsButton) return;
+  statsButton.hidden = !isAdmin;
+  if (!isAdmin && isStatsPanelOpen()) closeStatsPanel({ restoreFocus: false });
+}
+
+async function refreshRole() {
+  if (!sessionToken) {
+    applyRole(false);
+    return;
+  }
+  try {
+    applyRole((await fetchJson("/api/session")).admin);
+  } catch (error) {
+    // Losing the button is the safe direction, and every other request will
+    // report a broken session in its own right.
+    applyRole(false);
+  }
+}
+
+function isStatsPanelOpen() {
+  return Boolean(statsPanel && !statsPanel.hidden);
+}
+
+function getStatsPanelFocusables() {
+  return [closeStatsPanelButton, ...statsWindowButtons.map(({ button }) => button)].filter(
+    (button) => button && !button.disabled,
+  );
+}
+
+function focusStatsPanel() {
+  closeStatsPanelButton?.focus();
+}
+
+function restoreStatsPanelFocus() {
+  const invoker = statsPanelInvoker;
+  statsPanelInvoker = undefined;
+  invoker?.focus();
+}
+
+function trapStatsPanelFocus(event) {
+  const focusables = getStatsPanelFocusables();
+  if (focusables.length === 0) return;
+  const activeIndex = focusables.indexOf(document.activeElement);
+  const nextIndex = event.shiftKey
+    ? (activeIndex <= 0 ? focusables.length : activeIndex) - 1
+    : (activeIndex + 1) % focusables.length;
+  event.preventDefault();
+  focusables[nextIndex].focus();
+}
+
+function closeStatsPanel({ restoreFocus = true } = {}) {
+  if (!statsPanel) return;
+  statsPanel.hidden = true;
+  statsButton?.setAttribute("aria-expanded", "false");
+  hideModalBackdrop();
+  if (restoreFocus) restoreStatsPanelFocus();
+}
+
+async function openStatsPanel(event) {
+  if (
+    !isAdmin ||
+    isSaving ||
+    isLoadingCollection ||
+    isLoadingActivity ||
+    isLoadingStats ||
+    isCollectionPanelOpen() ||
+    isActivityPanelOpen() ||
+    !statsPanel
+  ) {
+    return;
+  }
+  statsPanelInvoker = event?.currentTarget ?? document.activeElement;
+  statsPanel.hidden = false;
+  statsButton?.setAttribute("aria-expanded", "true");
+  showModalBackdrop();
+  renderStatsWindows();
+  focusStatsPanel();
+  await loadStats(statsDays);
+}
+
+function renderStatsWindows() {
+  if (!statsWindows) return;
+  statsWindowButtons = STATS_WINDOWS.map((days) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = days === statsDays ? "stats-window is-active" : "stats-window";
+    button.textContent = `${days} days`;
+    button.setAttribute("aria-pressed", days === statsDays ? "true" : "false");
+    button.disabled = isLoadingStats;
+    button.addEventListener("click", () => loadStats(days));
+    return { days, button };
+  });
+  statsWindows.replaceChildren(...statsWindowButtons.map(({ button }) => button));
+}
+
+async function loadStats(days) {
+  if (isLoadingStats) return;
+  statsDays = days;
+  isLoadingStats = true;
+  renderStatsWindows();
+  setStatsStatus("Loading usage…");
+  statsContent?.replaceChildren();
+  try {
+    renderStats(await fetchJson(`/api/stats?days=${days}`));
+    setStatsStatus("");
+  } catch (error) {
+    statsContent?.replaceChildren();
+    setStatsStatus("Usage could not be loaded.");
+    showError(error);
+  } finally {
+    isLoadingStats = false;
+    renderStatsWindows();
+  }
+}
+
+function setStatsStatus(message) {
+  if (!statsStatus) return;
+  statsStatus.textContent = message;
+  statsStatus.hidden = !message;
+}
+
+function renderStats(report) {
+  if (!statsContent) return;
+  const sections = [statsSummary(report)];
+  const marked = report.totals.solved + report.totals.revisit;
+  if (marked > 0) {
+    sections.push(
+      statsProfiles(report),
+      statsDaysChart(report),
+      statsCollections(report),
+      statsHours(report),
+    );
+  }
+  if (report.lifetime.length > 0) sections.push(statsLifetime(report));
+  statsContent.replaceChildren(...sections.filter(Boolean));
+}
+
+function statsSummary(report) {
+  const section = document.createElement("section");
+  section.className = "stats-summary";
+  const window = document.createElement("p");
+  window.className = "stats-summary__window";
+  window.textContent = `${report.window.start} to ${report.window.end} (${report.window.zone})`;
+  const headline = document.createElement("p");
+  headline.className = "stats-summary__headline";
+  const marked = report.totals.solved + report.totals.revisit;
+  headline.textContent = marked
+    ? `${countOf(report.totals.profiles, "profile")} active · ` +
+      `${marked} marked (${report.totals.solved} solved, ${report.totals.revisit} revisit) · ` +
+      `${report.totals.duration} recorded`
+    : "No problems marked in this window.";
+  section.append(window);
+  section.append(headline);
+  return section;
+}
+
+function statsProfiles(report) {
+  const rows = report.profiles.map((profile) => [
+    profile.user,
+    profile.solved,
+    profile.revisit,
+    profile.duration,
+    profile.active_days,
+    profile.median,
+    profile.last_mark,
+  ]);
+  return statsSection(
+    "Profiles",
+    statsTable(["Profile", "Solved", "Revisit", "Time", "Days", "Median", "Last mark"], rows),
+  );
+}
+
+function statsDaysChart(report) {
+  const busiest = Math.max(...report.days.map((day) => day.count), 0);
+  const chart = document.createElement("div");
+  chart.className = "stats-days";
+  for (const day of report.days) {
+    const row = document.createElement("div");
+    row.className = "stats-day";
+    row.append(statsCell("stats-day__label", day.label));
+    row.append(statsCell("stats-day__count", String(day.count)));
+    row.append(statsBar(day.count, busiest));
+    row.append(
+      statsCell(
+        "stats-day__who",
+        day.by_user
+          .slice(0, 3)
+          .map(({ user: name, count }) => `${name} ${count}`)
+          .join(", "),
+      ),
+    );
+    chart.append(row);
+  }
+  return statsSection("By day", chart);
+}
+
+function statsCollections(report) {
+  const listed = report.collections.slice(0, STATS_LISTED_COLLECTIONS);
+  const section = statsSection(
+    "Collections",
+    statsTable(
+      ["Collection", "Marked"],
+      listed.map((entry) => [entry.slug, entry.count]),
+    ),
+  );
+  const hidden = report.collections.length - listed.length;
+  if (hidden > 0) {
+    section.append(statsCell("stats-note", `… and ${countOf(hidden, "collection")} more`));
+  }
+  return section;
+}
+
+function statsHours(report) {
+  const busiest = Math.max(...report.hours, 0);
+  const chart = document.createElement("div");
+  chart.className = "stats-hours";
+  chart.setAttribute("role", "img");
+  chart.setAttribute(
+    "aria-label",
+    `Problems marked by hour of the day, in ${report.window.zone}: ` +
+      report.hours
+        .map((count, hour) => (count ? `${hour}:00 ${count}` : ""))
+        .filter(Boolean)
+        .join(", "),
+  );
+  report.hours.forEach((count, hour) => {
+    const column = document.createElement("div");
+    column.className = "stats-hour";
+    const fill = document.createElement("div");
+    fill.className = "stats-hour__bar";
+    fill.style.height = `${busiest > 0 ? Math.round((100 * count) / busiest) : 0}%`;
+    column.append(fill);
+    // Every sixth hour only: 24 labels side by side are unreadable on a phone.
+    column.append(statsCell("stats-hour__label", hour % 6 === 0 ? String(hour) : ""));
+    chart.append(column);
+  });
+  return statsSection(`Time of day (${report.window.zone})`, chart);
+}
+
+function statsLifetime(report) {
+  return statsSection(
+    "All time",
+    statsTable(
+      ["Profile", "Solved", "Revisit", "Collections", "Since"],
+      report.lifetime.map((profile) => [
+        profile.user,
+        profile.solved,
+        profile.revisit,
+        profile.collections,
+        profile.since,
+      ]),
+    ),
+  );
+}
+
+function statsSection(title, body) {
+  const section = document.createElement("section");
+  section.className = "stats-section";
+  const heading = document.createElement("h3");
+  heading.className = "stats-section__title";
+  heading.textContent = title;
+  section.append(heading);
+  section.append(body);
+  return section;
+}
+
+function statsTable(headers, rows) {
+  const table = document.createElement("table");
+  table.className = "stats-table";
+  const head = document.createElement("thead");
+  head.append(statsTableRow(headers, "th"));
+  const body = document.createElement("tbody");
+  for (const cells of rows) body.append(statsTableRow(cells, "td"));
+  table.append(head);
+  table.append(body);
+  return table;
+}
+
+function statsTableRow(cells, tag) {
+  const row = document.createElement("tr");
+  cells.forEach((value, index) => {
+    const cell = document.createElement(tag);
+    cell.textContent = String(value);
+    // Everything but the name is a number or a stamp, and reads better trailing
+    // the column it belongs to.
+    if (index > 0) cell.className = "stats-number";
+    row.append(cell);
+  });
+  return row;
+}
+
+function statsBar(count, busiest) {
+  const track = document.createElement("div");
+  track.className = "stats-bar";
+  const fill = document.createElement("div");
+  fill.className = "stats-bar__fill";
+  fill.style.width = `${busiest > 0 ? Math.round((100 * count) / busiest) : 0}%`;
+  track.append(fill);
+  return track;
+}
+
+function statsCell(className, text) {
+  const cell = document.createElement("span");
+  cell.className = className;
+  cell.textContent = text;
+  return cell;
+}
+
+function countOf(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 async function loadActiveCollection(
@@ -1341,6 +1711,7 @@ async function startReader() {
     setControlsDisabled(true);
     user = getStoredUser() ?? (await requestSignIn());
     renderProfile();
+    refreshRole();
     if (!user) throw new Error("A valid name is required to track progress.");
     catalog = await fetchJson("/api/collections");
     renderCollectionList();
@@ -1392,6 +1763,8 @@ changeCollectionButton?.addEventListener("click", openCollectionPanel);
 closeCollectionPanelButton?.addEventListener("click", closeCollectionPanel);
 activityButton?.addEventListener("click", openActivityPanel);
 closeActivityPanelButton?.addEventListener("click", closeActivityPanel);
+statsButton?.addEventListener("click", openStatsPanel);
+closeStatsPanelButton?.addEventListener("click", () => closeStatsPanel());
 window.addEventListener("popstate", loadCollectionFromHistory);
 document.addEventListener("keydown", handleKeydown);
 document.addEventListener("wheel", handleWheel, { passive: true });

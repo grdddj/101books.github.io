@@ -4,7 +4,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from reader.stats import build_profile_report, build_report, read_marks, render, render_profile
+from reader.stats import (
+    build_profile_report,
+    build_report,
+    read_marks,
+    render,
+    render_profile,
+    report_payload,
+)
 
 
 def _stamp(day: int, hour: int = 12, minute: int = 0) -> str:
@@ -440,6 +447,105 @@ class RenderTests(StatsTestCase):
         self.assertIn("ada", text)
         self.assertIn("book-a", text)
         self.assertIn("2026-09-04", text)
+
+
+class PayloadTests(StatsTestCase):
+    """The shape the admin panel is rendered from."""
+
+    def solved(self, day: int, hour: int, problem: int, seconds: int) -> dict[str, object]:
+        return {
+            "problem_id": f"book-a:1/{problem}@1",
+            "status": "solved",
+            "timestamp": _stamp(day, hour),
+            "duration_seconds": seconds,
+        }
+
+    def payload(self, days: int = 7) -> dict[str, object]:
+        return report_payload(self.report(days=days))
+
+    def test_the_window_totals_and_profiles_are_carried_over(self) -> None:
+        self.write_profile("ada", [self.solved(9, 12, 1, 30), self.solved(10, 9, 2, 90)])
+
+        payload = self.payload()
+
+        self.assertEqual(payload["window"]["start"], "2026-09-04")
+        self.assertEqual(payload["window"]["end"], "2026-09-10")
+        self.assertEqual(payload["window"]["days"], 7)
+        self.assertEqual(payload["totals"]["solved"], 2)
+        self.assertEqual(payload["totals"]["profiles"], 1)
+        self.assertEqual(payload["profiles"][0]["user"], "ada")
+        self.assertEqual(payload["profiles"][0]["solved"], 2)
+        self.assertEqual(payload["profiles"][0]["duration"], "2m00s")
+
+    def test_nothing_about_sessions_or_addresses_is_exposed(self) -> None:
+        # The panel reports usage; sign-ins, refused logins and the addresses
+        # they came from stay in the terminal report.
+        self.write_profile("ada", [self.solved(9, 12, 1, 30)])
+        self.write_metrics(
+            "2026-09-09",
+            [
+                {"event": "session.login", "user": "ada", "timestamp": _stamp(9), "ip": "1.2.3.4"},
+                {
+                    "event": "session.rejected",
+                    "user": "mallory",
+                    "timestamp": _stamp(9),
+                    "ip": "9.9.9.9",
+                    "reason": "AuthError",
+                },
+            ],
+        )
+
+        serialized = json.dumps(self.payload())
+
+        self.assertNotIn("9.9.9.9", serialized)
+        self.assertNotIn("rejected", serialized)
+        self.assertNotIn("sign_ins", serialized)
+
+    def test_every_day_of_the_window_is_labelled_for_display(self) -> None:
+        self.write_profile("ada", [self.solved(10, 12, 1, 30)])
+
+        days = self.payload()["days"]
+
+        self.assertEqual(len(days), 7)
+        self.assertEqual(days[-1]["date"], "2026-09-10")
+        self.assertEqual(days[-1]["label"], "Thu 09-10")
+        self.assertEqual(days[-1]["count"], 1)
+        self.assertEqual(days[-1]["by_user"], [{"user": "ada", "count": 1}])
+
+    def test_the_hour_histogram_keeps_all_twenty_four_slots(self) -> None:
+        self.write_profile("ada", [self.solved(9, 12, 1, 30)])
+
+        hours = self.payload()["hours"]
+
+        self.assertEqual(len(hours), 24)
+        self.assertEqual(hours[12], 1)
+        self.assertEqual(sum(hours), 1)
+
+    def test_collections_and_lifetime_totals_are_included(self) -> None:
+        self.write_profile("ada", [self.solved(9, 12, 1, 30)])
+
+        payload = self.payload()
+
+        self.assertEqual(payload["collections"], [{"slug": "book-a", "count": 1}])
+        self.assertEqual(payload["lifetime"][0]["user"], "ada")
+        self.assertEqual(payload["lifetime"][0]["since"], "2026-09-09")
+
+    def test_timestamps_are_formatted_in_the_zone_the_window_names(self) -> None:
+        self.write_profile("ada", [self.solved(9, 22, 1, 30)])
+
+        payload = self.payload()
+
+        self.assertEqual(payload["window"]["zone"], "UTC")
+        self.assertEqual(payload["profiles"][0]["last_mark"], "09-09 22:00")
+
+    def test_an_empty_window_still_yields_every_section(self) -> None:
+        payload = self.payload()
+
+        self.assertEqual(payload["totals"]["solved"], 0)
+        self.assertEqual(payload["profiles"], [])
+        self.assertEqual(len(payload["days"]), 7)
+        self.assertEqual(payload["collections"], [])
+        self.assertEqual(payload["lifetime"], [])
 
 
 if __name__ == "__main__":

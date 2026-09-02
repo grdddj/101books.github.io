@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from reader.admins import AdminStore
 from reader.auth import AuthError, AuthStore
 from reader.metrics import EventLog
 
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
 # routes: the server has no opinion on them beyond serving the shell.
 COLLECTION_ROUTE = re.compile(r"(?:[^/]+(?:/\d+)?)?")
 DEFAULT_ACTIVITY_LIMIT = 50
+DEFAULT_STATS_DAYS = 7
+MAX_STATS_DAYS = 365
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,8 @@ def create_app(
     activity_context: dict[str, tuple[str, str, int]],
     progress_store: "ProgressStore",
     auth_store: AuthStore,
+    admin_store: AdminStore,
+    usage_report: Callable[[int], dict[str, object]],
     event_log: EventLog,
     base_path: str,
     static_directory: Path,
@@ -184,6 +189,11 @@ def create_app(
         if not header.startswith(prefix):
             return None
         return auth_store.user_for_token(header[len(prefix) :])
+
+    def is_admin(user: str | None) -> bool:
+        # Read per request rather than cached, so `reader.admin grant-admin`
+        # takes effect against the running service without a restart.
+        return user is not None and admin_store.is_admin(user)
 
     async def read_json_body(request: Request) -> object:
         """Parse a request body, refusing an oversized one before reading it.
@@ -371,6 +381,48 @@ def create_app(
         record(request, "activity.viewed", user=user, count=len(enriched_events))
         return json_response(HTTPStatus.OK, {"events": enriched_events}, cache_control="no-store")
 
+    @readable(route("/api/stats"))
+    def _stats(request: Request) -> Response:
+        if not set(request.query_params) <= {"days"}:
+            return error(HTTPStatus.BAD_REQUEST, "Invalid stats query")
+        windows = request.query_params.getlist("days")
+        if len(windows) > 1:
+            return error(HTTPStatus.BAD_REQUEST, "Invalid stats window")
+        user = authenticated_user(request)
+        if user is None:
+            record(request, "session.unauthenticated", route="/api/stats")
+            return error(HTTPStatus.UNAUTHORIZED, "Sign in required")
+        if not is_admin(user):
+            # Deliberately a 403 naming no route detail: a signed-in visitor may
+            # know the endpoint exists, they simply may not read it.
+            record(request, "stats.refused", user=user)
+            return error(HTTPStatus.FORBIDDEN, "Not permitted")
+        try:
+            days = DEFAULT_STATS_DAYS if not windows else parse_stats_days(windows[0])
+        except ValueError as failure:
+            return error(HTTPStatus.BAD_REQUEST, str(failure))
+        try:
+            payload = usage_report(days)
+        except OSError:
+            return error(HTTPStatus.INTERNAL_SERVER_ERROR, "Usage data is unavailable")
+        record(request, "stats.viewed", user=user, days=days)
+        return json_response(HTTPStatus.OK, payload, cache_control="no-store")
+
+    @readable(route("/api/session"))
+    def _session(request: Request) -> Response:
+        """Who the caller is, and whether the admin panel is theirs to open.
+
+        The client stores its token across reloads, so without this it would
+        have to remember the role too - and a stale flag either hides the panel
+        from an admin or shows a button that only ever 403s.
+        """
+        user = authenticated_user(request)
+        if user is None:
+            return error(HTTPStatus.UNAUTHORIZED, "Sign in required")
+        return json_response(
+            HTTPStatus.OK, {"user": user, "admin": is_admin(user)}, cache_control="no-store"
+        )
+
     @app.post(route("/api/session"))
     async def _log_in(request: Request) -> Response:
         try:
@@ -412,7 +464,12 @@ def create_app(
         record(request, "session.created" if result.created else "session.login", user=result.user)
         return json_response(
             HTTPStatus.OK,
-            {"user": result.user, "token": result.token, "created": result.created},
+            {
+                "user": result.user,
+                "token": result.token,
+                "created": result.created,
+                "admin": is_admin(result.user),
+            },
             cache_control="no-store",
         )
 
@@ -455,6 +512,15 @@ def create_app(
         )
 
     return app
+
+
+def parse_stats_days(value: str) -> int:
+    if not re.fullmatch(r"[0-9]+", value):
+        raise ValueError("Invalid stats window")
+    days = int(value)
+    if not 1 <= days <= MAX_STATS_DAYS:
+        raise ValueError(f"Stats window must be between 1 and {MAX_STATS_DAYS} days")
+    return days
 
 
 def parse_activity_limit(value: str) -> int:

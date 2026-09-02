@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import timezone
 from pathlib import Path
 
+from reader.admins import AdminStore
 from reader.auth import AuthError, AuthStore, validate_password
 from reader.metrics import EventLog
 from reader.stats import build_profile_report, build_report, profile_names, render, render_profile
@@ -41,6 +42,7 @@ def list_profiles(data_directory: Path) -> int:
     users_directory = data_directory / "users"
     names: list[tuple[str, bool]] = []
     store = AuthStore(data_directory)
+    admins = AdminStore(data_directory)
     for path in sorted(users_directory.glob("*.json")):
         try:
             user = json.loads(path.read_text(encoding="utf-8"))["user"]
@@ -50,10 +52,47 @@ def list_profiles(data_directory: Path) -> int:
 
     if not names:
         print("No profiles found.")
-        return 0
     for user, claimed in names:
-        print(f"{'claimed  ' if claimed else 'UNCLAIMED'}  {user}")
+        role = "  admin" if admins.is_admin(user) else ""
+        print(f"{'claimed  ' if claimed else 'UNCLAIMED'}  {user}{role}")
+
+    # A grant for a profile that does not exist yet is worth seeing: it is
+    # either a name still to be created or, more likely, a typo that will never
+    # take effect.
+    listed = {user for user, _ in names}
+    for name in admins.names():
+        if name not in listed:
+            print(f"admin      {name}  (no profile of that name yet)")
     return 0
+
+
+def set_admin(data_directory: Path, user: str, granted: bool) -> int:
+    """Grant or revoke the role that opens the usage panel in the reader."""
+    admins = AdminStore(data_directory)
+    if granted and not _profile_exists(data_directory, user):
+        # Names are matched exactly, so `Jirka` would be a different profile
+        # than `jirka` and the grant would silently do nothing.
+        print(
+            f"Warning: no profile named {user!r} yet - the grant applies "
+            "only to that exact spelling.",
+            file=sys.stderr,
+        )
+    changed = admins.grant(user) if granted else admins.revoke(user)
+    if not changed:
+        print(f"{user!r} was already {'an admin' if granted else 'not an admin'}.")
+        return 0
+    print(f"{'Granted' if granted else 'Revoked'} admin for {user!r}.")
+    return 0
+
+
+def _profile_exists(data_directory: Path, user: str) -> bool:
+    if AuthStore(data_directory).has_credential(user):
+        return True
+    return any(
+        json.loads(path.read_text(encoding="utf-8")).get("user") == user
+        for path in (data_directory / "users").glob("*.json")
+        if path.is_file()
+    )
 
 
 def report_metrics(data_directory: Path, days: int | None) -> int:
@@ -131,7 +170,15 @@ def main(argv: list[str] | None = None) -> int:
         help="read from the terminal when omitted, which keeps it out of shell history",
     )
 
-    commands.add_parser("list", help="show profiles and whether each has a password")
+    commands.add_parser("list", help="show profiles, their passwords and who is an admin")
+
+    grant_command = commands.add_parser(
+        "grant-admin", help="let a profile see the usage panel in the reader"
+    )
+    grant_command.add_argument("user")
+
+    revoke_command = commands.add_parser("revoke-admin", help="take that back")
+    revoke_command.add_argument("user")
 
     stats_command = commands.add_parser("stats", help="who solved how much, over the last N days")
     stats_command.add_argument(
@@ -159,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         return report_stats(arguments.data_dir, arguments.days, arguments.utc, arguments.profile)
     if arguments.command == "metrics":
         return report_metrics(arguments.data_dir, arguments.days)
+    if arguments.command in {"grant-admin", "revoke-admin"}:
+        return set_admin(arguments.data_dir, arguments.user, arguments.command == "grant-admin")
     return list_profiles(arguments.data_dir)
 
 

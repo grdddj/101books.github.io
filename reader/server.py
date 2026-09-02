@@ -16,6 +16,7 @@ from typing import Annotated, ClassVar
 import typer
 import uvicorn
 
+from reader.admins import AdminStore
 from reader.auth import AuthStore
 from reader.logs import configure_logging
 from reader.metrics import EventLog
@@ -597,6 +598,15 @@ def create_server(
         {problem.problem_id for collection in collections for problem in collection.problems},
     )
     event_log = EventLog(data_directory)
+
+    def usage_report(days: int) -> dict[str, object]:
+        # Imported lazily: the report reads the data directory from scratch on
+        # every call, which is what keeps it correct while the service writes to
+        # the same files, and nothing else in the server needs it.
+        from reader.stats import build_report, report_payload
+
+        return report_payload(build_report(data_directory, days=days))
+
     app = create_app(
         collections=collections,
         activity_context={
@@ -606,6 +616,8 @@ def create_server(
         },
         progress_store=progress_store,
         auth_store=AuthStore(data_directory),
+        admin_store=AdminStore(data_directory),
+        usage_report=usage_report,
         event_log=event_log,
         base_path=normalized_base_path,
         static_directory=Path(__file__).parent / "static",

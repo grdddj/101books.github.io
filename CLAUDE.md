@@ -198,6 +198,19 @@ Cache); there is no API token on this machine.
   cells and slides every stone off its line - that was a real bug on square
   crops. `--board-available-height` is a hand-tuned guess at the chrome around
   the board; re-measure it if the header or controls change height.
+- **The usage panel is the only admin-only surface, and it shows usage only.**
+  `reader/admins.py` holds one list, `reader-data/admins.json`, written by
+  `reader.admin grant-admin|revoke-admin` and read on **every request** so a
+  grant needs no restart. Matching is exact and case-sensitive on purpose:
+  `Magic` and `magic` are two profiles anybody may create, so a loose match
+  would hand one person's role to whoever registers the other spelling.
+  `GET /api/stats?days=N` answers `reader/stats.report_payload`, which carries
+  no sign-ins, no refused logins and no addresses - those stay in the terminal
+  report. The client learns the role from `GET /api/session` on every load
+  rather than from storage, because a remembered flag either hides the panel
+  from somebody just granted it or leaves a button that only ever 403s.
+  `build_report` re-reads the data directory per call; that is what keeps it
+  correct while the service writes to the same files.
 - **Profiles are password-protected.** `reader/auth.py` holds scrypt hashing
   (random per-profile salt, never derived from the name) and HMAC-signed session
   tokens. Identity comes from the token, so API routes take no `user`
@@ -280,6 +293,13 @@ curl -X PUT http://127.0.0.1:8123/tsumego/api/progress \
 `PUT /api/progress` sets one problem at a time and appends an activity event
 stamped `now` - there is no way to backdate an import. Before any bulk change,
 copy the user's JSON file somewhere outside the tree.
+
+## Admin role
+
+```bash
+uv run python -m reader.admin grant-admin <name>   # opens the usage panel for them
+uv run python -m reader.admin list                 # marks who holds it
+```
 
 ## Checks before committing
 

@@ -432,6 +432,72 @@ def _median(values: list[int]) -> int | None:
     return (ordered[middle - 1] + ordered[middle]) // 2
 
 
+def report_payload(report: Report) -> dict[str, Any]:
+    """The report as JSON for the admin panel.
+
+    Usage only: sign-ins, refused logins and the addresses behind them stay in
+    the terminal report, which is read by whoever can already read the files.
+    Everything zone-dependent is formatted here rather than in the browser, so
+    the panel cannot label a mark with a different day than the chart it sits
+    above - the report was bucketed in the server's zone, not the viewer's.
+    """
+    return {
+        "window": {
+            "start": report.start.isoformat(),
+            "end": report.end.isoformat(),
+            "days": (report.end - report.start).days + 1,
+            "zone": report.zone_label,
+        },
+        "totals": {
+            "profiles": len(report.profiles),
+            "solved": report.solved,
+            "revisit": report.revisit,
+            "seconds": report.seconds,
+            "duration": format_duration(report.seconds),
+        },
+        "profiles": [
+            {
+                "user": profile.user,
+                "solved": profile.solved,
+                "revisit": profile.revisit,
+                "seconds": profile.seconds,
+                "duration": format_duration(profile.seconds),
+                "active_days": profile.active_days,
+                "median_seconds": profile.median_seconds,
+                "median": format_duration(profile.median_seconds)
+                if profile.median_seconds
+                else "-",
+                "collections": profile.collections,
+                "last_mark": profile.last_mark.astimezone(report.zone).strftime("%m-%d %H:%M"),
+            }
+            for profile in report.profiles
+        ],
+        "days": [
+            {
+                "date": day.day.isoformat(),
+                "label": day.day.strftime("%a %m-%d"),
+                "count": day.count,
+                "by_user": [
+                    {"user": user, "count": count} for user, count in day.by_user.most_common()
+                ],
+            }
+            for day in report.days
+        ],
+        "collections": [{"slug": slug, "count": count} for slug, count in report.collections],
+        "hours": list(report.hours),
+        "lifetime": [
+            {
+                "user": profile.user,
+                "solved": profile.solved,
+                "revisit": profile.revisit,
+                "collections": profile.collections,
+                "since": profile.first_seen.astimezone(report.zone).date().isoformat(),
+            }
+            for profile in report.lifetime
+        ],
+    }
+
+
 def render(report: Report) -> str:
     lines: list[str] = []
     span = (report.end - report.start).days + 1

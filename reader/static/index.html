@@ -49,6 +49,16 @@
         >
           Activity
         </button>
+        <button
+          id="show-stats"
+          type="button"
+          aria-controls="stats-panel"
+          aria-expanded="false"
+          disabled
+          hidden
+        >
+          Usage
+        </button>
       </div>
     </header>
     <div id="modal-backdrop" class="modal-backdrop" aria-hidden="true" hidden></div>
@@ -129,6 +139,22 @@
       </div>
       <p id="activity-empty" class="activity-empty" hidden></p>
       <ol id="activity-list" class="activity-list" aria-label="Recent solved and revisit actions"></ol>
+    </section>
+    <section
+      id="stats-panel"
+      class="stats-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="stats-panel-title"
+      hidden
+    >
+      <div class="stats-panel__header">
+        <h2 id="stats-panel-title">Reader usage</h2>
+        <button id="close-stats-panel" type="button">Close</button>
+      </div>
+      <div id="stats-windows" class="stats-windows" role="group" aria-label="Reporting window"></div>
+      <p id="stats-status" class="stats-status" role="status" aria-live="polite" hidden></p>
+      <div id="stats-content" class="stats-content"></div>
     </section>
     <main id="app" class="reader">
       <p id="problem-ordinal" class="problem-ordinal"></p>

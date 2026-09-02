@@ -234,6 +234,12 @@ turn into a failed request.
   is the one exception, and exists solely so sign-out is observable.
 - Read it with `uv run python -m reader.admin metrics [--days N]`.
 
+`reader/stats.py` (`reader.admin stats`, or `./tools/reader-stats.sh [days]`)
+answers the usage question on top of both stores: the event log alone cannot,
+because progress predating it lives only in `users/*.json`, and that file alone
+knows nothing about sign-ins. It is read-only and buckets days in the local zone
+(`--utc` to override), so an evening session is not split across two days.
+
 ## Progress data
 
 Never hand-edit `reader-data/users/*.json`: the running process holds the

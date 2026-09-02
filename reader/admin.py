@@ -10,10 +10,12 @@ import getpass
 import json
 import sys
 from collections import Counter
+from datetime import timezone
 from pathlib import Path
 
 from reader.auth import AuthError, AuthStore, validate_password
 from reader.metrics import EventLog
+from reader.stats import build_report, render
 
 
 def set_password(data_directory: Path, user: str, password: str | None) -> int:
@@ -98,6 +100,12 @@ def report_metrics(data_directory: Path, days: int | None) -> int:
     return 0
 
 
+def report_stats(data_directory: Path, days: int, use_utc: bool) -> int:
+    zone = timezone.utc if use_utc else None
+    print(render(build_report(data_directory, days=days, zone=zone)))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m reader.admin")
     parser.add_argument("--data-dir", type=Path, default=Path("reader-data"))
@@ -114,12 +122,24 @@ def main(argv: list[str] | None = None) -> int:
 
     commands.add_parser("list", help="show profiles and whether each has a password")
 
+    stats_command = commands.add_parser("stats", help="who solved how much, over the last N days")
+    stats_command.add_argument(
+        "--days", type=int, default=7, help="window ending today, in days (default 7)"
+    )
+    stats_command.add_argument(
+        "--utc",
+        action="store_true",
+        help="bucket days in UTC; by default an evening session counts as that evening",
+    )
+
     metrics_command = commands.add_parser("metrics", help="summarise the recorded events")
     metrics_command.add_argument("--days", type=int, help="only the most recent N daily files")
 
     arguments = parser.parse_args(argv)
     if arguments.command == "set-password":
         return set_password(arguments.data_dir, arguments.user, arguments.password)
+    if arguments.command == "stats":
+        return report_stats(arguments.data_dir, arguments.days, arguments.utc)
     if arguments.command == "metrics":
         return report_metrics(arguments.data_dir, arguments.days)
     return list_profiles(arguments.data_dir)

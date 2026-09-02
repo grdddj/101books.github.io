@@ -123,6 +123,31 @@ uv run python -m reader.admin --data-dir reader-data metrics --days 7
 The report summarises events by type, sign-ins per profile, rejected sign-ins
 grouped by address with their reasons, and median solving time.
 
+## Usage statistics
+
+`stats` answers "who used this, and how much" over a window ending today:
+
+```bash
+./tools/reader-stats.sh                    # last 7 days, from anywhere on the box
+./tools/reader-stats.sh 1                  # today
+uv run python -m reader.admin --data-dir reader-data stats --days 30
+```
+
+It prints, for the window: a per-profile table (problems solved, revisit flags,
+time recorded, days active, median time per problem, last mark), a per-day bar
+chart naming who was solving, the collections worked on, a time-of-day
+histogram, sign-ins and refused sign-ins, and an all-time line per profile.
+
+It reads two sources because neither covers the other: `reader-data/users/*.json`
+holds every problem ever marked with its duration and reaches back before the
+event log existed, while `reader-data/metrics/*.jsonl` is the only record of
+sign-ins and refused logins. Both are opened read-only, so it is safe to run
+while the service is up.
+
+Days are bucketed in the machine's local zone, so a session that ends at 23:30
+counts as that evening rather than as the next UTC morning; pass `--utc` to
+bucket in UTC instead.
+
 TLS terminates at Cloudflare, which therefore sees passwords in transit. This is
 a tool for a handful of friends, not a secret store - do not reuse a password
 that matters.

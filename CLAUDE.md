@@ -162,16 +162,27 @@ Cache); there is no API token on this machine.
   that way until **Show solution** is pressed - widening the crop for the moves
   up front would tell you which way they run. The solution is put away again
   whenever the problem changes; nothing about it survives navigation.
-- **A crop that comes within `BOARD_EDGE_REACH` (2) lines of a side is pulled
-  out to it.** Nothing marks the outermost line of a crop as the board's edge,
-  so a crop stopping one line short reads as an edge that isn't there: in
-  capturing races 33 the wall on column `d` looked like it stood on the first
-  line, with columns `a` and `b` hidden, which changes every liberty count. Each
-  side is pulled out on its own, so an edge position shows its edge and a corner
-  one shows its corner. The gap distribution justifies the threshold - stones
-  sit either within two lines of a side or five-plus away - so a centre problem
-  never pays for it. Widening from the *initial* stones only leaks nothing about
-  the solution; do not key it off the moves.
+- **Every side of a crop is either the board's edge or a cut, and the two are
+  drawn differently.** A side whose nearest stone is within `BOARD_EDGE_REACH`
+  (3) lines of the edge is shown flush with it; any other side stops
+  `BOARD_CUT_MARGIN` (2) lines past the last stone and its grid lines *run off
+  the diagram* - drawn to the board box instead of stopping at the last
+  intersection, which is how a Go book says the board continues. Each side is
+  decided on its own, so an edge position shows its edge and a corner one shows
+  its corner. Widening from the *initial* stones only leaks nothing about the
+  solution; do not key it off the moves.
+
+  Both halves are needed and neither is decoration. Capturing races 33 hid the
+  wall's real distance from the left side, which changes every liberty count -
+  that is the pull-out. Tesuji 4 problems 7 and 13 read as if the position
+  spanned the board's full width - that is the cut margin. And margin alone
+  cannot fix it: across the shelf a *real* edge shows nought to three free
+  lines (0: 23,492 sides, 1: 21,774, 2: 6,155, 3: 1,275), so any fixed cut
+  margin under four collides with some real edge. The lines running off are
+  what actually make a cut unmistakable; the two free lines are breathing room.
+  If you ever tighten the margin back to one, the bug returns even with the
+  bleeding lines, because a stone one line from the boundary reads as second
+  line no matter how the boundary is drawn.
 - **Solution diagrams follow the book convention, not the rules of Go.** The
   numbered moves are laid over the opening position and captures are *not*
   replayed: the point is to show the sequence, and removing stones would erase
@@ -297,8 +308,12 @@ scalars, and duck-type with `error.name === "TypeError"` rather than
 
 Playwright is available. Two traps found the hard way:
 
-- The reader calls `prompt()` for a display name on first load, which blocks
-  `domcontentloaded`. Register a dialog handler before navigating.
+- A signed-out reader opens the **Profile panel over the board**, so a
+  screenshot of a problem needs a session; there is no `prompt()` any more, and
+  no dialog to handle. To photograph a board without signing in, render it
+  through the harness `tests/test_browser_grid.mjs` builds - `app.css` plus
+  `app.js` with the trailing `startReader();` replaced by an export of
+  `renderBoard`.
 - **`context.setOffline(true)` does not block a service worker's own `fetch()`.**
   An offline test using it will pass while still hitting the network. To test
   offline for real, start a second reader on a spare port and kill it.

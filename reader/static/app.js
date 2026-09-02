@@ -566,17 +566,32 @@ function getCoordinatePosition(coordinate) {
 // Nothing marks the outermost line of a crop as the board's edge, so a crop
 // that stops just short of one reads as a corner that isn't there - the wall in
 // capturing races 33 looked like it stood on the first line when two more lines
-// were hidden, which changes every liberty count. A side within this many lines
-// is therefore always shown. The stones themselves sit either against an edge
-// or well away from one, so the pull-out only ever costs a line or two.
-const BOARD_EDGE_REACH = 2;
+// were hidden, which changes every liberty count. A side whose nearest stone is
+// within this many lines of the edge is therefore shown flush with it. The
+// stones themselves sit either against an edge or well away from one, so the
+// pull-out only ever costs a line or two.
+const BOARD_EDGE_REACH = 3;
 const LAST_LINE = 18;
+// A side that is *not* the board's edge stops this far past the last stone. One
+// line was not enough: across the whole shelf a real edge shows nought to three
+// free lines, so a cut showing one was pixel-identical to the 21,774 edges that
+// also show one - tesuji 4 problems 7 and 13 read as if the position spanned
+// the full width of the board. Two lines is the breathing room; the lines
+// running off the diagram (see renderBoard) are what actually settle it.
+const BOARD_CUT_MARGIN = 2;
 
-function pullOutToEdge(low, high) {
-  return [
-    low <= BOARD_EDGE_REACH ? 0 : low,
-    LAST_LINE - high <= BOARD_EDGE_REACH ? LAST_LINE : high,
-  ];
+// Where one axis of the crop stops, and whether each end is the board's own
+// edge or a cut. The renderer draws the two differently, so the caller needs
+// the answer, not just the numbers.
+function cropSide(lowest, highest) {
+  const startAtEdge = lowest <= BOARD_EDGE_REACH;
+  const endAtEdge = LAST_LINE - highest <= BOARD_EDGE_REACH;
+  return {
+    start: startAtEdge ? 0 : lowest - BOARD_CUT_MARGIN,
+    end: endAtEdge ? LAST_LINE : highest + BOARD_CUT_MARGIN,
+    startAtEdge,
+    endAtEdge,
+  };
 }
 
 // The crop widens only once the solution is on screen. Sizing it for the moves
@@ -586,21 +601,19 @@ function getBoardCrop(problem, showSolution = false) {
   if (showSolution) stones.push(...solutionMoves(problem).map((move) => move.at));
   const columns = stones.map((coordinate) => getCoordinatePosition(coordinate).column);
   const rows = stones.map((coordinate) => getCoordinatePosition(coordinate).row);
-  const [minColumn, maxColumn] = pullOutToEdge(
-    Math.max(0, Math.min(...columns) - 1),
-    Math.min(LAST_LINE, Math.max(...columns) + 1),
-  );
-  const [minRow, maxRow] = pullOutToEdge(
-    Math.max(0, Math.min(...rows) - 1),
-    Math.min(LAST_LINE, Math.max(...rows) + 1),
-  );
+  const horizontal = cropSide(Math.min(...columns), Math.max(...columns));
+  const vertical = cropSide(Math.min(...rows), Math.max(...rows));
   return {
-    minColumn,
-    maxColumn,
-    minRow,
-    maxRow,
-    columns: maxColumn - minColumn + 1,
-    rows: maxRow - minRow + 1,
+    minColumn: horizontal.start,
+    maxColumn: horizontal.end,
+    minRow: vertical.start,
+    maxRow: vertical.end,
+    columns: horizontal.end - horizontal.start + 1,
+    rows: vertical.end - vertical.start + 1,
+    leftAtEdge: horizontal.startAtEdge,
+    rightAtEdge: horizontal.endAtEdge,
+    topAtEdge: vertical.startAtEdge,
+    bottomAtEdge: vertical.endAtEdge,
   };
 }
 
@@ -641,22 +654,29 @@ function renderBoard(problem, showSolution = false) {
   // intersection its stone sits on the moment the box is not exactly
   // columns:rows.
   grid.setAttribute("preserveAspectRatio", "none");
+  // A real edge stops flush at the last intersection; a cut runs off the
+  // diagram, which is how a Go book says "the board continues here" and is the
+  // only thing that distinguishes the two - the same crop can be either.
+  const top = crop.topAtEdge ? 0.5 : 0;
+  const bottom = crop.rows - (crop.bottomAtEdge ? 0.5 : 0);
+  const left = crop.leftAtEdge ? 0.5 : 0;
+  const right = crop.columns - (crop.rightAtEdge ? 0.5 : 0);
   for (let column = 0; column < crop.columns; column += 1) {
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     const position = column + 0.5;
     line.setAttribute("class", "goban-grid-line goban-grid-line--vertical");
     line.setAttribute("x1", position);
     line.setAttribute("x2", position);
-    line.setAttribute("y1", 0.5);
-    line.setAttribute("y2", crop.rows - 0.5);
+    line.setAttribute("y1", top);
+    line.setAttribute("y2", bottom);
     grid.append(line);
   }
   for (let row = 0; row < crop.rows; row += 1) {
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     const position = row + 0.5;
     line.setAttribute("class", "goban-grid-line goban-grid-line--horizontal");
-    line.setAttribute("x1", 0.5);
-    line.setAttribute("x2", crop.columns - 0.5);
+    line.setAttribute("x1", left);
+    line.setAttribute("x2", right);
     line.setAttribute("y1", position);
     line.setAttribute("y2", position);
     grid.append(line);

@@ -34,12 +34,12 @@ globalThis.readerTestApi = { renderBoard };`,
 <script>
   const gridBoard = document.querySelector("#board");
   const cases = [
-    // Clear of every side, so the crop is the stones plus their margin and the
-    // shape under test is the one named.
-    { name: "ten-by-five", problem: { black: ["fh", "mj"], white: [] }, columns: 10, rows: 5 },
-    { name: "nine-by-six", problem: { black: ["be", "hh"], white: [] }, columns: 9, rows: 6 },
-    { name: "eight-by-eight", problem: { black: ["bb", "gg"], white: [] }, columns: 8, rows: 8 },
-    { name: "five-by-ten", problem: { black: ["bb", "di"], white: [] }, columns: 5, rows: 10 },
+    // Clear of every side, so all four sides are cuts, the crop is the stones
+    // plus two lines each way, and the shape under test is the one named.
+    { name: "ten-by-five", problem: { black: ["fh", "kh"], white: [] }, columns: 10, rows: 5 },
+    { name: "nine-by-six", problem: { black: ["fh", "ji"], white: [] }, columns: 9, rows: 6 },
+    { name: "eight-by-eight", problem: { black: ["fh", "ik"], white: [] }, columns: 8, rows: 8 },
+    { name: "five-by-ten", problem: { black: ["fh", "fm"], white: [] }, columns: 5, rows: 10 },
   ];
   const results = cases.map(({ name, problem, columns, rows }) => {
     readerTestApi.renderBoard(problem);

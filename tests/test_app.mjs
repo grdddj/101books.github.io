@@ -1354,27 +1354,64 @@ test("closing the sign-in dialog without a name explains why nothing loads", asy
   assert.match(elements.get("#status-feedback").textContent, /valid name is required/i);
 });
 
-test("board crops include a one-line margin around the initial stones", () => {
+test("a crop that is not the board's edge keeps two free lines", () => {
   const { context } = loadApp({ savedName: "Ada" });
-  const cropFor = context.readerTestApi.getBoardCrop
-    ? (problem) => JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem)))
-    : () => null;
+  const cropFor = (problem) =>
+    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem)));
 
-  assert.deepEqual(
-    cropFor({ black: ["aa"], white: ["bb"] }),
-    { minColumn: 0, maxColumn: 2, minRow: 0, maxRow: 2, columns: 3, rows: 3 },
-  );
-  assert.deepEqual(
-    cropFor({ black: ["jr"], white: ["ks"] }),
-    { minColumn: 8, maxColumn: 11, minRow: 16, maxRow: 18, columns: 4, rows: 3 },
-  );
-  assert.deepEqual(
-    cropFor({ black: ["ii"], white: ["jj"] }),
-    { minColumn: 7, maxColumn: 10, minRow: 7, maxRow: 10, columns: 4, rows: 4 },
-  );
+  // One free line was indistinguishable from a stone on the second line of a
+  // real edge, so a cut stops two lines past the last stone.
+  assert.deepEqual(cropFor({ black: ["ii"], white: ["jj"] }), {
+    minColumn: 6,
+    maxColumn: 11,
+    minRow: 6,
+    maxRow: 11,
+    columns: 6,
+    rows: 6,
+    leftAtEdge: false,
+    rightAtEdge: false,
+    topAtEdge: false,
+    bottomAtEdge: false,
+  });
 });
 
-test("a crop that stops within two lines of a side is pulled out to it", () => {
+test("specialized training in tesuji 4 problem 7 does not claim the board's width", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+  // The reported bug: the position sits in the bottom-left corner, but the crop
+  // stopped one column past the rightmost stone, so the right-hand side read as
+  // the board's edge and the shape looked hemmed in with nowhere to run.
+  const crop = context.readerTestApi.getBoardCrop({
+    black: ["cr", "dr", "er", "es", "fq", "gq", "gr", "is", "hp", "go", "io", "cp", "cq"],
+    white: ["br", "bq", "bp", "co", "do", "dp", "dq", "eq", "fr", "fs", "gs", "hs", "hr", "hq", "ir"],
+  });
+
+  assert.equal(crop.leftAtEdge, true);
+  assert.equal(crop.bottomAtEdge, true);
+  assert.equal(crop.rightAtEdge, false);
+  assert.equal(crop.topAtEdge, false);
+  // Rightmost stone is on column i (8); the crop reaches k (10).
+  assert.equal(crop.maxColumn, 10);
+  assert.equal(crop.maxColumn - 8, 2);
+});
+
+test("specialized training in tesuji 4 problem 13 does not claim the board's width", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+  const crop = context.readerTestApi.getBoardCrop({
+    black: ["cq", "cr", "ep", "fp", "fq", "fo", "do", "bo", "bq", "dq"],
+    white: ["dr", "fr", "er", "eq", "gp", "gq", "eo", "co", "cp", "dp", "bp"],
+  });
+
+  assert.equal(crop.leftAtEdge, true);
+  assert.equal(crop.bottomAtEdge, true);
+  assert.equal(crop.rightAtEdge, false);
+  // Rightmost stone is on column g (6); the crop reaches i (8).
+  assert.equal(crop.maxColumn, 8);
+  // The top is a cut too, and gets the same two lines.
+  assert.equal(crop.topAtEdge, false);
+  assert.equal(14 - crop.minRow, 2);
+});
+
+test("a crop that stops within three lines of a side is pulled out to it", () => {
   const { context } = loadApp({ savedName: "Ada" });
   const cropFor = (problem) =>
     JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem)));
@@ -1386,31 +1423,90 @@ test("a crop that stops within two lines of a side is pulled out to it", () => {
     black: ["dp", "do", "dn", "em", "fm", "dl", "eq", "fq", "gq", "fp", "gp", "hp", "fr", "fs", "gs"],
     white: ["dq", "ep", "eo", "fo", "go", "ho", "ip", "hq", "hr", "gr", "hs", "ir"],
   };
-  assert.deepEqual(
-    cropFor(capturingRace),
-    { minColumn: 0, maxColumn: 9, minRow: 10, maxRow: 18, columns: 10, rows: 9 },
-  );
+  const race = cropFor(capturingRace);
+  assert.equal(race.minColumn, 0);
+  assert.equal(race.leftAtEdge, true);
+  assert.equal(race.maxRow, 18);
+  assert.equal(race.bottomAtEdge, true);
 
-  // Every side is pulled out on its own, so a lone corner stone shows both.
+  // Every side is decided on its own, so a lone corner stone shows both edges
+  // and two free lines on each of the two sides that are cuts.
+  assert.deepEqual(cropFor({ black: ["cc"], white: [] }), {
+    minColumn: 0,
+    maxColumn: 4,
+    minRow: 0,
+    maxRow: 4,
+    columns: 5,
+    rows: 5,
+    leftAtEdge: true,
+    rightAtEdge: false,
+    topAtEdge: true,
+    bottomAtEdge: false,
+  });
+  assert.deepEqual(cropFor({ black: ["qq"], white: [] }), {
+    minColumn: 14,
+    maxColumn: 18,
+    minRow: 14,
+    maxRow: 18,
+    columns: 5,
+    rows: 5,
+    leftAtEdge: false,
+    rightAtEdge: true,
+    topAtEdge: false,
+    bottomAtEdge: true,
+  });
+});
+
+test("a crop far from every side is cut on all four", () => {
+  const { context } = loadApp({ savedName: "Ada" });
+
   assert.deepEqual(
-    cropFor({ black: ["cc"], white: [] }),
-    { minColumn: 0, maxColumn: 3, minRow: 0, maxRow: 3, columns: 4, rows: 4 },
-  );
-  assert.deepEqual(
-    cropFor({ black: ["qq"], white: [] }),
-    { minColumn: 15, maxColumn: 18, minRow: 15, maxRow: 18, columns: 4, rows: 4 },
+    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop({ black: ["ee"], white: [] }))),
+    {
+      minColumn: 2,
+      maxColumn: 6,
+      minRow: 2,
+      maxRow: 6,
+      columns: 5,
+      rows: 5,
+      leftAtEdge: false,
+      rightAtEdge: false,
+      topAtEdge: false,
+      bottomAtEdge: false,
+    },
   );
 });
 
-test("a crop far from every side keeps its one-line margin", () => {
-  const { context } = loadApp({ savedName: "Ada" });
+test("grid lines stop at a real edge and run off a cut", () => {
+  const { context, elements } = loadApp({ savedName: "Ada" });
+  const extents = (problem) => {
+    context.readerTestApi.renderBoard(problem);
+    const lines = elements
+      .get("#board")
+      .appended.find((element) => element.className === "goban-grid").appended;
+    const first = (kind) => lines.find((line) => line.className.includes(kind)).attributes;
+    const vertical = first("vertical");
+    const horizontal = first("horizontal");
+    return {
+      top: Number(vertical.y1),
+      bottom: Number(vertical.y2),
+      left: Number(horizontal.x1),
+      right: Number(horizontal.x2),
+    };
+  };
 
-  // Three lines of gap is a position that genuinely floats, and widening it
-  // there would cost board size on every centre problem for nothing.
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop({ black: ["ee"], white: [] }))),
-    { minColumn: 3, maxColumn: 5, minRow: 3, maxRow: 5, columns: 3, rows: 3 },
-  );
+  // A stone in the top-left corner: both edges are real, both far sides are cut.
+  const corner = extents({ black: ["aa"], white: [] });
+  assert.equal(corner.top, 0.5);
+  assert.equal(corner.left, 0.5);
+  const crop = context.readerTestApi.getBoardCrop({ black: ["aa"], white: [] });
+  assert.equal(corner.bottom, crop.rows);
+  assert.equal(corner.right, crop.columns);
+
+  // Clear of every side, every line runs off.
+  const floating = extents({ black: ["jj"], white: [] });
+  assert.equal(floating.top, 0);
+  assert.equal(floating.left, 0);
 });
 
 test("board stones use grid positions relative to the crop", () => {
@@ -1420,10 +1516,10 @@ test("board stones use grid positions relative to the crop", () => {
 
   const board = elements.get("#board");
   const blackStone = board.appended.find((stone) => stone.className === "stone black");
-  assert.equal(board.style["--board-columns"], 3);
-  assert.equal(board.style["--board-rows"], 3);
-  assert.equal(blackStone.style.gridColumn, 2);
-  assert.equal(blackStone.style.gridRow, 2);
+  assert.equal(board.style["--board-columns"], 5);
+  assert.equal(board.style["--board-rows"], 5);
+  assert.equal(blackStone.style.gridColumn, 3);
+  assert.equal(blackStone.style.gridRow, 3);
 });
 
 test("rectangular crops set matching dimensions and keep grid intervals square", () => {
@@ -1432,8 +1528,8 @@ test("rectangular crops set matching dimensions and keep grid intervals square",
   context.readerTestApi.renderBoard({ black: ["be", "hh"], white: [] });
 
   const board = elements.get("#board");
-  assert.equal(board.style["--board-columns"], 9);
-  assert.equal(board.style["--board-rows"], 6);
+  assert.equal(board.style["--board-columns"], 10);
+  assert.equal(board.style["--board-rows"], 8);
   assert.match(
     appCss,
     /aspect-ratio:\s*var\(--board-columns\)\s*\/\s*var\(--board-rows\);/,
@@ -1451,11 +1547,11 @@ test("board creates one explicit grid line for every crop row and column", () =>
   const gridLines = grid.appended;
   assert.equal(
     gridLines.filter((line) => line.className.includes("vertical")).length,
-    9,
+    10,
   );
   assert.equal(
     gridLines.filter((line) => line.className.includes("horizontal")).length,
-    6,
+    8,
   );
 });
 
@@ -1472,8 +1568,8 @@ test("the solution crop widens only once the solution is on screen", () => {
     JSON.parse(JSON.stringify(context.readerTestApi.getBoardCrop(problem, showSolution)));
 
   // Sizing the board for the moves up front would say which way they run.
-  assert.equal(crop(false).rows, 3);
-  assert.equal(crop(true).rows, 7);
+  assert.equal(crop(false).rows, 5);
+  assert.equal(crop(true).rows, 9);
 });
 
 test("the solution numbers its moves in order and alternates the colours", () => {

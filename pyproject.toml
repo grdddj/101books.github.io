@@ -1,0 +1,22 @@
+[project]
+name = "101books-go-reader"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "typer>=0.15",
+    "uvicorn>=0.34",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# The packages live at the repository root, so that is where ruff has to look
+# for them; with "reader" here it treated `reader.auth` as a third-party import.
+src = ["."]
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["reader", "tests"]

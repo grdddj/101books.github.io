@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#e0b563">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Tsumego">
+    <title>Reading training</title>
+    <link rel="manifest" href="__READER_BASE_PATH__/manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="__READER_BASE_PATH__/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="__READER_BASE_PATH__/icons/apple-touch-icon.png">
+    <link rel="stylesheet" href="__READER_BASE_PATH__/app.css">
+    <script>window.READER_BASE_PATH = "__READER_BASE_PATH__";</script>
+    <script src="__READER_BASE_PATH__/app.js" defer></script>
+  </head>
+  <body>
+    <header class="reader-header">
+      <div class="header-content">
+        <div>
+          <h1 id="collection-title">Go problem reader</h1>
+          <p id="progress-summary" aria-live="polite"></p>
+        </div>
+        <button
+          id="profile"
+          type="button"
+          class="profile-button"
+          disabled
+        >
+          Profile
+        </button>
+        <button
+          id="change-collection"
+          type="button"
+          aria-controls="collection-panel"
+          aria-expanded="false"
+          disabled
+        >
+          Change collection
+        </button>
+        <button
+          id="show-activity"
+          type="button"
+          aria-controls="activity-panel"
+          aria-expanded="false"
+          disabled
+        >
+          Activity
+        </button>
+        <button
+          id="show-stats"
+          type="button"
+          aria-controls="stats-panel"
+          aria-expanded="false"
+          disabled
+          hidden
+        >
+          Usage
+        </button>
+      </div>
+    </header>
+    <div id="modal-backdrop" class="modal-backdrop" aria-hidden="true" hidden></div>
+    <section
+      id="profile-panel"
+      class="profile-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profile-panel-title"
+      hidden
+    >
+      <div class="profile-panel__header">
+        <h2 id="profile-panel-title">Profile</h2>
+        <button id="close-profile-panel" type="button">Close</button>
+      </div>
+      <form id="profile-form" class="profile-form">
+        <label class="profile-form__label" for="profile-name">
+          Name your progress is tracked under
+        </label>
+        <input
+          id="profile-name"
+          class="profile-form__input"
+          type="text"
+          maxlength="80"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          enterkeyhint="done"
+        >
+        <label class="profile-form__label" for="profile-password">Password</label>
+        <input
+          id="profile-password"
+          class="profile-form__input"
+          type="password"
+          maxlength="200"
+          autocomplete="current-password"
+          enterkeyhint="done"
+        >
+        <p id="profile-error" class="profile-form__error" role="alert" hidden></p>
+        <div class="profile-form__actions">
+          <button id="profile-save" type="submit" class="profile-form__save">Sign in</button>
+          <button id="profile-create" type="button" hidden>Create profile</button>
+          <button id="profile-signout" type="button">Sign out</button>
+        </div>
+      </form>
+    </section>
+    <section
+      id="collection-panel"
+      class="collection-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="collection-panel-title"
+      hidden
+    >
+      <div class="collection-panel__header">
+        <h2 id="collection-panel-title">Choose a collection</h2>
+        <button id="close-collection-panel" type="button">Close</button>
+      </div>
+      <div
+        id="collection-filters"
+        class="collection-filters"
+        role="group"
+        aria-label="Filter collections by type"
+      ></div>
+      <ul id="collection-list" class="collection-list" aria-label="Available collections"></ul>
+    </section>
+    <section
+      id="activity-panel"
+      class="activity-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="activity-panel-title"
+      hidden
+    >
+      <div class="activity-panel__header">
+        <h2 id="activity-panel-title">Recent activity</h2>
+        <button id="close-activity-panel" type="button">Close</button>
+      </div>
+      <p id="activity-empty" class="activity-empty" hidden></p>
+      <ol id="activity-list" class="activity-list" aria-label="Recent solved and revisit actions"></ol>
+    </section>
+    <section
+      id="stats-panel"
+      class="stats-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="stats-panel-title"
+      hidden
+    >
+      <div class="stats-panel__header">
+        <h2 id="stats-panel-title">Reader usage</h2>
+        <button id="close-stats-panel" type="button">Close</button>
+      </div>
+      <div id="stats-windows" class="stats-windows" role="group" aria-label="Reporting window"></div>
+      <p id="stats-status" class="stats-status" role="status" aria-live="polite" hidden></p>
+      <div id="stats-content" class="stats-content"></div>
+    </section>
+    <main id="app" class="reader">
+      <div class="problem-heading">
+        <p id="problem-ordinal" class="problem-ordinal"></p>
+        <p id="revisit-progress" class="revisit-progress" hidden></p>
+      </div>
+      <div
+        id="board"
+        class="goban"
+        role="img"
+        aria-label="Static Go board showing the current problem"
+      ></div>
+      <p
+        id="solution-note"
+        class="solution-note"
+        title="A move played where an earlier numbered stone already is: it captured that stone first."
+        hidden
+      ></p>
+      <p id="status-feedback" role="status" aria-live="polite"></p>
+      <nav class="reader-controls" aria-label="Problem controls">
+        <button
+          id="show-solution"
+          type="button"
+          class="solution-toggle"
+          aria-controls="board"
+          aria-expanded="false"
+          disabled
+        >
+          Show solution
+        </button>
+        <button id="solved" type="button" aria-pressed="false" disabled>Solved</button>
+        <div class="reader-controls__secondary">
+          <button id="previous" type="button" disabled>Previous</button>
+          <button
+            id="revisit"
+            type="button"
+            title="Flag for another look. Once every problem in the booklet has been seen, the flags become the drill: solving one takes you straight to the next flag."
+            aria-pressed="false"
+            disabled
+          >
+            Revisit
+          </button>
+          <button id="next" type="button" disabled>Next</button>
+        </div>
+      </nav>
+    </main>
+  </body>
+</html>

@@ -3,6 +3,7 @@ const reader = document.querySelector("#app");
 const collectionTitle = document.querySelector("#collection-title");
 const progressSummary = document.querySelector("#progress-summary");
 const problemOrdinal = document.querySelector("#problem-ordinal");
+const revisitProgress = document.querySelector("#revisit-progress");
 const statusFeedback = document.querySelector("#status-feedback");
 const previousButton = document.querySelector("#previous");
 const solvedButton = document.querySelector("#solved");
@@ -411,6 +412,37 @@ function firstPendingIndex(problems, statuses) {
   return flagged === -1 ? 0 : flagged;
 }
 
+// A booklet with nothing unseen left is no longer a sequence to read through -
+// the flags are the only work in it, so that is what "the next problem" means.
+function isDrillList(problems, statuses) {
+  return problems.every(({ id }) => statuses[id]);
+}
+
+function revisitIndexes(problems, statuses) {
+  return problems.flatMap(({ id }, index) =>
+    statuses[id]?.status === "revisit" ? [index] : [],
+  );
+}
+
+// Wraps: flags are scattered, and the one after the last in numbering is the
+// first. Returns `from` itself when it is the only flag left, so re-flagging
+// the problem on screen holds still instead of pretending to move on.
+function nextRevisitIndex(problems, statuses, from) {
+  const total = problems.length;
+  for (let step = 1; step <= total; step += 1) {
+    const index = (from + step) % total;
+    if (statuses[problems[index].id]?.status === "revisit") return index;
+  }
+  return -1;
+}
+
+// Where a mark on `from` should leave the reader. -1 means stay put: either the
+// booklet ends here or the drill just ran out of flags.
+function indexAfterMark(problems, statuses, from) {
+  if (isDrillList(problems, statuses)) return nextRevisitIndex(problems, statuses, from);
+  return from < problems.length - 1 ? from + 1 : -1;
+}
+
 function getSavedCollection(collectionCatalog) {
   const saved = localStorage.getItem(COLLECTION_STORAGE_KEY);
   return collectionCatalog.some(({ slug }) => slug === saved)
@@ -751,6 +783,7 @@ function renderReader() {
     collectionTitle.textContent = collection.title;
     problemOrdinal.textContent = `Problem ${problem.number} of ${collection.problems.length}`;
     progressSummary.textContent = `Solved: ${solvedCount} · Revisit: ${revisitCount} · Total: ${collection.problems.length}`;
+    renderRevisitProgress();
     previousButton.disabled = controlsDisabled || currentIndex === 0;
     nextButton.disabled = controlsDisabled || collection.problems.length === currentIndex + 1;
     // A solved problem has nothing left to record, so Solved stops being an
@@ -770,6 +803,21 @@ function renderReader() {
     showError(error);
     return false;
   }
+}
+
+// The drill needs a place marker of its own: "Problem 84 of 108" says nothing
+// about how many flags are left, and without that the pass has no visible end.
+function renderRevisitProgress() {
+  if (!revisitProgress) return;
+  const flags = isDrillList(collection.problems, statuses)
+    ? revisitIndexes(collection.problems, statuses)
+    : [];
+  const position = flags.indexOf(currentIndex);
+  revisitProgress.hidden = flags.length === 0;
+  revisitProgress.textContent =
+    position === -1
+      ? `${flags.length} flagged to revisit`
+      : `Revisit ${position + 1} of ${flags.length}`;
 }
 
 function renderSolutionControl(problem, controlsDisabled) {
@@ -827,12 +875,15 @@ async function setCurrentStatus(status) {
     }
     renderCollectionList();
     const submittedProblemIsCurrent = collection.problems[currentIndex]?.id === problem.id;
-    if (submittedProblemIsCurrent && submittedIndex < collection.problems.length - 1) {
-      navigate(1);
+    const nextIndex = submittedProblemIsCurrent
+      ? indexAfterMark(collection.problems, statuses, submittedIndex)
+      : -1;
+    if (nextIndex !== -1) {
+      goToIndex(nextIndex);
     } else {
       renderReader();
     }
-    statusFeedback.textContent = "";
+    statusFeedback.textContent = drillClearedMessage(status, submittedProblemIsCurrent);
   } catch (error) {
     isSaving = false;
     showError(error);
@@ -846,14 +897,25 @@ async function setCurrentStatus(status) {
 
 function navigate(delta) {
   if (!hasCollection() || isSaving || isLoadingCollection || isDialogOpen()) return;
-  const nextIndex = Math.max(
-    0,
-    Math.min(collection.problems.length - 1, currentIndex + delta),
+  goToIndex(
+    Math.max(0, Math.min(collection.problems.length - 1, currentIndex + delta)),
   );
-  if (nextIndex !== currentIndex) isSolutionShown = false;
-  currentIndex = nextIndex;
+}
+
+function goToIndex(index) {
+  if (index !== currentIndex) isSolutionShown = false;
+  currentIndex = index;
   renderReader();
   syncProblemPath();
+}
+
+// The one moment worth narrating: the flag that just went away was the last
+// one, so the booklet is finished and the reader is about to sit still.
+function drillClearedMessage(status, submittedProblemIsCurrent) {
+  if (status !== "solved" || !submittedProblemIsCurrent) return "";
+  if (!isDrillList(collection.problems, statuses)) return "";
+  if (revisitIndexes(collection.problems, statuses).length > 0) return "";
+  return "Every problem in this booklet is solved.";
 }
 
 function handleWheel(event) {

@@ -529,8 +529,30 @@ h1 {
   padding: 1rem 0 1.5rem;
 }
 
+.problem-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
 .problem-ordinal {
   font-weight: 700;
+}
+
+/* Kept shorter than the ordinal's line so the drill marker cannot push the
+   board down: `--board-available-height` is a hand-measured budget. */
+.revisit-progress {
+  margin: 0;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #8a5200;
+  background: #f6dcb4;
+  box-shadow: inset 0 0 0 0.08rem #d88a24;
 }
 
 /* The width has to be derived from the height budget and the crop's aspect

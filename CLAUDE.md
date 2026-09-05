@@ -137,6 +137,22 @@ Cache); there is no API token on this machine.
   unused - 145 activity events with zero revisits. Flags now only decide where
   you land once nothing is unseen, turning a finished booklet into a drill list.
   Do not fold them back into the first branch.
+- **"The next problem" is not always the next number.** `indexAfterMark` is
+  what a Solved or Revisit action advances by, and once `isDrillList` holds -
+  every problem in the booklet has a record - it follows the flags instead,
+  wrapping past the end. Landing on the first flag was already right; without
+  this, marking it solved dropped you onto the solved problem next to it and
+  the drill had to be walked by hand. The wrap is what lets the drill finish
+  without reopening the chooser, and returning `from` itself when it is the
+  only flag left is deliberate: re-flagging the problem on screen must hold
+  still rather than pretend to move on. During the first pass (anything
+  unseen) the advance stays `+1` - jumping to a flag would cost the reader
+  their place, which is the bug the flag redesign existed to fix.
+  `#revisit-progress` renders the drill's own place marker, since "Problem 84
+  of 108" says nothing about how many flags are left. It lives in a flex row
+  beside the ordinal rather than as its own grid item so it cannot push the
+  board down - `--board-available-height` is hand-measured. **Previous** and
+  **Next** stay literal numbering navigation; only the mark follows the drill.
 - **The URL names the displayed problem**: `/collections/<slug>/<number>`, with
   `<number>` the one-based problem number. Every move between problems rewrites
   it with `replaceState`, so the address bar is always shareable and Back still

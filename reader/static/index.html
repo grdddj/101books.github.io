@@ -157,7 +157,10 @@
       <div id="stats-content" class="stats-content"></div>
     </section>
     <main id="app" class="reader">
-      <p id="problem-ordinal" class="problem-ordinal"></p>
+      <div class="problem-heading">
+        <p id="problem-ordinal" class="problem-ordinal"></p>
+        <p id="revisit-progress" class="revisit-progress" hidden></p>
+      </div>
       <div
         id="board"
         class="goban"
@@ -188,7 +191,7 @@
           <button
             id="revisit"
             type="button"
-            title="Flag for another look. Flagged problems come back once you have seen every problem in the booklet."
+            title="Flag for another look. Once every problem in the booklet has been seen, the flags become the drill: solving one takes you straight to the next flag."
             aria-pressed="false"
             disabled
           >

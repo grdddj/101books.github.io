@@ -242,6 +242,16 @@ it starts at the first flag and the booklet becomes a drill list. Flagging is
 therefore free during a pass, which it was not when a flag pulled you back to it
 every time.
 
+Once the booklet is a drill list, "the next problem" means the next flag rather
+than the next number: solving one jumps straight to the next flagged position,
+wrapping past the end back to the earlier ones, so the drill can be finished
+without ever reopening the chooser. Pressing **Revisit** again keeps the flag
+and moves on, which is how a problem is skipped for this round. A badge beside
+the problem number counts the drill down - `Revisit 3 of 7` on a flagged
+problem, `7 flagged to revisit` while browsing elsewhere in the booklet - and
+clearing the last flag reports that every problem in the booklet is solved.
+**Previous** and **Next** always step through the numbering, drill or not.
+
 ## Install on a phone
 
 The reader ships as a progressive web app, so it can be added to a phone's home

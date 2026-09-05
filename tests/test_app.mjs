@@ -1721,6 +1721,136 @@ test("a problem with no recorded solution cannot be revealed", async () => {
   assert.equal(context.readerTestApi.isSolutionShown(), false);
 });
 
+// A booklet with every problem already marked is the drill list: the flags are
+// the only work left, so the fixture has to remember what it stored.
+function createDrillFetch(initialStatuses) {
+  const problems = createProblems();
+  const stored = { ...initialStatuses };
+  return async (path, options = {}) => {
+    const session = sessionResponse(path, options);
+    if (session) return session;
+    if (path === "/api/collections") {
+      return response([
+        {
+          slug: "test-collection",
+          title: "Test collection",
+          category: "tsumego",
+          level: "20 kyu",
+          problem_count: problems.length,
+        },
+      ]);
+    }
+    if (path === "/api/collections/test-collection") {
+      return response({ slug: "test-collection", title: "Test collection", problems });
+    }
+    if (path === "/api/progress" && options.method === undefined) {
+      return response({ problems: { ...stored } });
+    }
+    if (path === "/api/progress" && options.method === "PUT") {
+      const { problem_id: problemId, status } = JSON.parse(options.body);
+      stored[problemId] = { status };
+      return response({ problems: { ...stored } });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+}
+
+const allSolvedExcept = (revisits) =>
+  Object.fromEntries(
+    createProblems().map(({ id }, index) => [
+      id,
+      { status: revisits.includes(index) ? "revisit" : "solved" },
+    ]),
+  );
+
+test("a finished booklet opens on its first flag and solving one jumps to the next", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createDrillFetch(allSolvedExcept([1, 4])),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+  assert.equal(elements.get("#revisit-progress").textContent, "Revisit 1 of 2");
+  assert.equal(elements.get("#revisit-progress").hidden, false);
+
+  // Not problem 3: the numbering between the flags is already solved.
+  await context.readerTestApi.setCurrentStatus("solved");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 4);
+  assert.equal(elements.get("#revisit-progress").textContent, "Revisit 1 of 1");
+});
+
+test("the drill wraps from the last flag back to an earlier one", async () => {
+  const { context } = loadApp({
+    fetchImpl: createDrillFetch(allSolvedExcept([0, 5])),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+  context.readerTestApi.navigate(5);
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 5);
+  await context.readerTestApi.setCurrentStatus("solved");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+});
+
+test("re-flagging the only remaining problem holds still instead of walking away", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createDrillFetch(allSolvedExcept([2])),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
+  await context.readerTestApi.setCurrentStatus("revisit");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 2);
+  assert.equal(elements.get("#revisit-progress").textContent, "Revisit 1 of 1");
+});
+
+test("clearing the last flag reports the booklet finished and hides the drill marker", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createDrillFetch(allSolvedExcept([3])),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 3);
+  await context.readerTestApi.setCurrentStatus("solved");
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 3);
+  assert.equal(elements.get("#revisit-progress").hidden, true);
+  assert.equal(
+    elements.get("#status-feedback").textContent,
+    "Every problem in this booklet is solved.",
+  );
+});
+
+test("a flag away from the drill's position reports how many are left", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createDrillFetch(allSolvedExcept([1, 4])),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+  context.readerTestApi.navigate(1);
+
+  assert.equal(elements.get("#revisit-progress").hidden, false);
+  assert.equal(elements.get("#revisit-progress").textContent, "2 flagged to revisit");
+});
+
+// The first pass must keep reading straight through: flags are the drill for
+// afterwards, and skipping ahead to one would cost the reader their place.
+test("an unfinished booklet still advances by one after a mark", async () => {
+  const { context, elements } = loadApp({
+    fetchImpl: createDrillFetch({ "problem-4": { status: "revisit" } }),
+    savedName: "Ada",
+  });
+  await context.readerTestApi.startReader();
+
+  assert.equal(context.readerTestApi.getCurrentIndex(), 0);
+  assert.equal(elements.get("#revisit-progress").hidden, true);
+  await context.readerTestApi.setCurrentStatus("solved");
+  assert.equal(context.readerTestApi.getCurrentIndex(), 1);
+});
+
 test("successful status saves advance one problem without passing the final problem", async () => {
   const { context, elements } = loadApp({ fetchImpl: createFetch(), savedName: "Ada" });
   await context.readerTestApi.startReader();

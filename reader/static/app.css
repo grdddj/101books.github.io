@@ -486,7 +486,17 @@ h1 {
   text-align: left;
 }
 
-.collection-option--partial::before {
+.collection-option--partial,
+.collection-option--complete {
+  --collection-progress-fill: #f3bf73;
+}
+
+.collection-option--complete {
+  --collection-progress-fill: #7fce9d;
+}
+
+.collection-option--partial::before,
+.collection-option--complete::before {
   position: absolute;
   z-index: 0;
   top: 0;
@@ -495,7 +505,7 @@ h1 {
   width: var(--collection-progress);
   content: "";
   pointer-events: none;
-  background: #f3bf73;
+  background: var(--collection-progress-fill);
 }
 
 .collection-option__label {

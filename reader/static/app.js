@@ -544,8 +544,9 @@ function renderCollectionList() {
   renderCollectionFilters();
   collectionButtons = filteredCatalog().map((item) => {
     const totals = getCatalogStatusTotals(item.slug);
-    const solvedPercentage = (totals.solved / item.problem_count) * 100;
     const isComplete = totals.solved === item.problem_count;
+    // A finished booklet is a full bar even if the count is unusable for a ratio.
+    const solvedPercentage = isComplete ? 100 : (totals.solved / item.problem_count) * 100;
     const solvedPercentageLabel = isComplete ? 100 : Math.min(99, Math.round(solvedPercentage));
     const stateClass =
       isComplete
